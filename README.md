@@ -1,5 +1,7 @@
 # Mojidori (文字取り) — catch every word
 
+[![Python](https://img.shields.io/badge/python-3.9%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org) [![Whisper](https://img.shields.io/badge/whisper-%2B%20faster--whisper-412991?style=flat-square&logo=openai&logoColor=white)](https://github.com/openai/whisper) [![CUDA](https://img.shields.io/badge/CUDA-supported-76B900?style=flat-square&logo=nvidia&logoColor=white)](#) [![Platforms](https://img.shields.io/badge/win%20%C2%B7%20mac%20%C2%B7%20linux-lightgrey?style=flat-square)](#) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
+
 Whisper-powered lecture transcription with a modern web UI. Works on **Windows, macOS, and Linux**.
 
 Drop audio/video files → get clean, AI-ready transcripts.
