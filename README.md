@@ -40,16 +40,20 @@ python start.py --port 9000  # Custom port
 python start.py --no-browser # Don't auto-open browser
 ```
 
-1. **Drop files** onto the web page (or click to browse)
-2. **Pick a preset** (Fast / Balanced / Best Quality)
-3. **Click Start** — watch real-time progress in the live console
-4. **Copy** any transcript with one click — optionally bundled with a study prompt, ready to paste into your AI
+1. **Give it something** — any of these works, and with **Auto-start** on (default) it starts right away:
+   - drop recordings anywhere on the page (or click to browse)
+   - paste a **YouTube link** into the box — or just press **Ctrl+V anywhere on the page**. Playlists become one job per video. Most other video sites work too (anything [yt-dlp](https://github.com/yt-dlp/yt-dlp) supports).
+   - copy files into the `queue/` folder — they're picked up once they finish copying
+2. **Watch the progress bar** — each job shows its stage, % done, and time left. Cancel or retry any time; "Log" shows exactly what the engine is doing.
+3. **Read, search, copy** — click a transcript to read it in the app, search inside it, copy it (optionally with a study prompt attached, ready for your AI), or download the `.txt` / `.srt` / `.vtt`. For YouTube transcripts, the timestamps link back to that moment in the video.
 
-Quality-of-life extras:
-- **👀 Watch mode** — tick the box in Queue and the app auto-starts whenever new files land. Drop & forget.
-- **📦 Auto-archive** — finished originals move to `archive/<ClassCode>/`, so the queue never double-processes.
-- **📱 Done ping** — set `NTFY_TOPIC` in `.env` and your phone buzzes when a long job finishes.
-- **💾 Settings memory** — provider, model, sliders, and toggles persist across restarts.
+Good to know:
+- **Quality** — *Accurate* (large-v3, default) or *Quick* (large-v3-turbo, ~1.5× faster, a few more slips). More engines — including Groq/OpenAI cloud — are under ⚙ Settings.
+- **Nothing runs twice** — one job at a time, in order. Finished originals move to `archive/<ClassCode>/`.
+- **Files already in `queue/` when the app starts** are listed but wait for you to press Start, so launching never kicks off a surprise batch.
+- **📱 Done ping** — set `NTFY_TOPIC` in `.env` and your phone buzzes when the queue empties.
+- **Settings are saved** in `settings.json` and apply to everything, including files dropped into `queue/`.
+- **Different data folder** — set `MOJIDORI_HOME` to keep queue/processed/archive somewhere else.
 
 ### CLI (legacy)
 
@@ -62,12 +66,12 @@ python transcribe_lecture.py -m large-v3 -l en
 ## Features
 
 - **Free, always** — local engines cost $0 forever; Groq cloud tier is free too. Only OpenAI bills.
-- **Two local engines** — classic Whisper or faster-whisper (~4× quicker, same accuracy)
+- **GPU by default** — faster-whisper on CUDA: a 93-min lecture takes ~5 min on an RTX 3060. `START.bat` installs the CUDA build of PyTorch automatically when it finds an NVIDIA GPU.
+- **Accuracy settings** — beam search (5 beams) on every engine, fallback re-decoding at higher temperatures, and filters that drop repeated or low-confidence (hallucinated) segments.
+- **YouTube & links** — paste a video or playlist link; audio-only download, nothing re-encoded
 - **Clean transcripts** — artifact cleanup, verify-flags on shaky segments, word counts, reading time
-- **Organized outputs** — `.txt` transcript + `.srt`/`.vtt` subtitles + raw JSON, per lecture
-- **Modern web UI** — drag & drop, presets, live terminal console
-- **Watch mode** — auto-starts when new files land in `queue/`
-- **Audio pipeline** — high-pass, mono, 16 kHz, 2-pass gain, limiter, verified by re-measure
+- **Organized outputs** — `.txt` transcript + `.srt`/`.vtt` subtitles + raw JSON + `meta.json`, per lecture
+- **Audio pipeline** — FFmpeg high-pass + mono + 16 kHz, 2-pass gain, limiter, verified by re-measure
 - **Batch processing** — whole queue in one run, originals auto-archived by class code
 - **10 languages** — auto-detect or specify manually
 
@@ -107,7 +111,8 @@ processed/
 └── C188 Lecture 1/
     ├── C188 Lecture 1_transcript.txt      # Formatted transcript
     ├── C188 Lecture 1_transcript_raw.json # Full Whisper output
-    └── C188 Lecture 1_enhanced.wav        # Normalized audio (if enabled)
+    ├── C188 Lecture 1.srt / .vtt          # Subtitles
+    └── meta.json                          # Duration, words, engine, source link
 ```
 
 ## Post-Processing with AI

@@ -1,690 +1,777 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Mojidori</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-    * { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    body { background: #f8fafc; }
-    .drop-zone.drag-over { border-color: #3b82f6; background: #eff6ff; }
-    .progress-bar { transition: width 0.3s ease; }
-    .fade-in { animation: fadeIn 0.3s ease-in; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mojidori</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23e8553a'/><text x='16' y='23' font-size='19' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'>文</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #08090b; --panel: #101216; --panel-2: #161920; --line: #232730; --line-2: #2e3440;
+  --text: #e7e9ee; --muted: #8a92a0; --dim: #5d6573;
+  --accent: #e8553a; --accent-hi: #ff6a4d; --accent-soft: rgba(232, 85, 58, .13);
+  --ok: #4ccf7f; --warn: #e0a83a; --err: #f0605a; --link: #7fb0ff;
+  --radius: 12px;
+  --font: 'JetBrains Mono', ui-monospace, 'Cascadia Code', Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 var(--font); }
+button, input, select { font: inherit; color: inherit; }
+a { color: var(--link); }
+::selection { background: var(--accent-soft); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 6px; border: 2px solid var(--bg); }
 
-    /* ── terminal console ── */
-    #console {
-      font-family: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace;
-      font-size: 0.78rem; line-height: 1.55;
-      background: #0d1117; color: #c9d1d9;
-      border-radius: 0.75rem; padding: 1rem 1.1rem;
-      max-height: 22rem; overflow-y: auto; white-space: pre-wrap;
-      word-break: break-word;
-    }
-    #console .t-step  { color: #58a6ff; font-weight: 600; }
-    #console .t-ok    { color: #3fb950; font-weight: 600; }
-    #console .t-warn  { color: #d29922; }
-    #console .t-err   { color: #f85149; font-weight: 600; }
-    #console .t-audio { color: #79c0ff; }
-    #console .t-api   { color: #d2a8ff; }
-    #console .t-dim   { color: #8b949e; }
-    .cursor-blink::after {
-      content: '▊'; color: #3fb950; animation: blink 1s steps(1) infinite;
-    }
-    @keyframes blink { 50% { opacity: 0; } }
-    #console::-webkit-scrollbar { width: 8px; }
-    #console::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+/* ── layout ── */
+header { position: sticky; top: 0; z-index: 20; background: rgba(8, 9, 11, .85); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+.bar { max-width: 960px; margin: 0 auto; padding: 12px 20px; display: flex; align-items: center; gap: 12px; }
+.seal { width: 30px; height: 30px; border-radius: 7px; background: var(--accent); color: #fff; display: grid; place-items: center; font-weight: 700; font-family: sans-serif; font-size: 17px; }
+.brand b { font-size: 15px; letter-spacing: .02em; }
+.brand span { color: var(--muted); font-size: 12px; margin-left: 8px; }
+.spacer { flex: 1; }
+main { max-width: 960px; margin: 0 auto; padding: 24px 20px 80px; display: grid; gap: 22px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); margin: 0; font-weight: 600; }
+.row { display: flex; align-items: center; gap: 10px; }
+.muted { color: var(--muted); } .dim { color: var(--dim); }
+.small { font-size: 12px; }
+.hidden { display: none !important; }
 
-    input[type="range"] { accent-color: #2563eb; }
-  </style>
+/* ── controls ── */
+.btn { border: 1px solid var(--line-2); background: var(--panel-2); border-radius: 8px; padding: 7px 12px; cursor: pointer; white-space: nowrap; transition: border-color .15s, background .15s; }
+.btn:hover { border-color: var(--muted); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn.primary:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--muted); padding: 5px 8px; }
+.btn.ghost:hover { color: var(--text); background: var(--panel-2); }
+.btn.sm { padding: 4px 9px; font-size: 12px; }
+.pill { font-size: 11px; padding: 3px 9px; border-radius: 99px; border: 1px solid var(--line-2); color: var(--muted); white-space: nowrap; }
+.pill.ok { color: var(--ok); border-color: rgba(76, 207, 127, .35); }
+.pill.warn { color: var(--warn); border-color: rgba(224, 168, 58, .35); }
+input[type=text], input[type=password], input[type=search], select {
+  background: var(--bg); border: 1px solid var(--line-2); border-radius: 8px; padding: 8px 10px; outline: none; min-width: 0;
+}
+input:focus, select:focus { border-color: var(--accent); }
+select { cursor: pointer; }
+label.check { display: flex; gap: 9px; align-items: flex-start; cursor: pointer; }
+label.check input { accent-color: var(--accent); margin-top: 3px; }
+.seg { display: inline-flex; background: var(--bg); border: 1px solid var(--line-2); border-radius: 9px; padding: 3px; }
+.seg button { border: 0; background: transparent; padding: 5px 12px; border-radius: 6px; cursor: pointer; color: var(--muted); }
+.seg button.on { background: var(--panel-2); color: var(--text); box-shadow: 0 0 0 1px var(--line-2); }
+.switch { position: relative; width: 34px; height: 20px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch span { position: absolute; inset: 0; background: var(--line-2); border-radius: 99px; cursor: pointer; transition: .2s; }
+.switch span::after { content: ''; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::after { transform: translateX(14px); }
+
+/* ── input card ── */
+.drop { padding: 30px 22px 22px; text-align: center; border: 1.5px dashed var(--line-2); border-radius: var(--radius); margin: 14px; cursor: pointer; transition: .15s; }
+.drop:hover, body.dragging .drop { border-color: var(--accent); background: var(--accent-soft); }
+.drop .big { font-size: 17px; font-weight: 600; }
+.drop .icon { font-size: 26px; margin-bottom: 6px; }
+.or { display: flex; align-items: center; gap: 12px; color: var(--dim); font-size: 12px; margin: 0 14px; }
+.or::before, .or::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.linkrow { display: flex; gap: 8px; padding: 14px; }
+.linkrow input { flex: 1; padding: 10px 12px; }
+.opts { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 18px; padding: 14px; border-top: 1px solid var(--line); }
+.opts .field { display: flex; align-items: center; gap: 8px; }
+.opts .grow { flex: 1; min-width: 240px; }
+.opts .grow input { flex: 1; }
+
+/* ── jobs ── */
+.section-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.jobs { display: grid; gap: 8px; }
+.job { padding: 12px 14px; }
+.job-top { display: flex; align-items: center; gap: 12px; }
+.job-ico { width: 30px; height: 30px; border-radius: 8px; background: var(--panel-2); display: grid; place-items: center; flex: none; font-size: 14px; }
+.job-ico.url { color: var(--accent); }
+.job-main { flex: 1; min-width: 0; }
+.job-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-stage { font-size: 12px; color: var(--muted); }
+.job.done .job-stage { color: var(--ok); }
+.job.error .job-stage { color: var(--err); }
+.job.cancelled { opacity: .6; }
+.job-actions { display: flex; gap: 4px; flex: none; }
+.progress { height: 4px; background: var(--panel-2); border-radius: 99px; overflow: hidden; margin-top: 10px; }
+.progress > div { height: 100%; background: var(--accent); border-radius: 99px; transition: width .4s ease; }
+.progress.indet > div { width: 30% !important; animation: indet 1.3s ease-in-out infinite; }
+@keyframes indet { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+.job-log { margin-top: 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 11.5px; line-height: 1.6; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: #b4bac4; }
+.l-step { color: var(--link); } .l-ok { color: var(--ok); } .l-warn { color: var(--warn); } .l-err { color: var(--err); } .l-audio { color: #8fc7ff; } .l-api { color: #c9a3ff; }
+
+/* ── library ── */
+.lib-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.lib-head input { width: 220px; }
+.lib { overflow: hidden; }
+.lib-row { display: flex; align-items: center; gap: 12px; padding: 11px 14px; border-top: 1px solid var(--line); cursor: pointer; }
+.lib-row:first-child { border-top: 0; }
+.lib-row:hover { background: var(--panel-2); }
+.lib-row .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-row .meta { font-size: 12px; color: var(--dim); }
+.lib-row .acts { display: flex; gap: 4px; opacity: .55; }
+.lib-row:hover .acts { opacity: 1; }
+.empty { padding: 26px; text-align: center; color: var(--dim); }
+
+/* ── drawers ── */
+.scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, .6); z-index: 40; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(880px, 100%); background: var(--panel); border-left: 1px solid var(--line); z-index: 41; display: flex; flex-direction: column; animation: slide .18s ease-out; }
+.drawer.narrow { width: min(460px, 100%); }
+@keyframes slide { from { transform: translateX(30px); opacity: 0; } }
+.drawer-head { padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
+.drawer-head .title { font-weight: 600; font-size: 15px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drawer-tools { padding: 10px 18px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.drawer-body { flex: 1; overflow: auto; padding: 18px 22px 40px; }
+.reader { max-width: 760px; margin: 0 auto; }
+.reader .hdr { color: var(--dim); font-size: 12px; white-space: pre-wrap; margin-bottom: 18px; }
+.reader p { margin: 0 0 14px; line-height: 1.75; }
+.reader .ts { font-size: 11px; color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; margin-right: 8px; text-decoration: none; }
+.reader a.ts:hover { color: var(--accent); border-color: var(--accent); }
+.reader .verify { color: var(--warn); font-size: 12px; white-space: pre-wrap; border-top: 1px solid var(--line); padding-top: 14px; margin-top: 20px; }
+.reader pre { white-space: pre-wrap; font: inherit; font-size: 13px; }
+mark { background: rgba(232, 85, 58, .35); color: inherit; border-radius: 2px; }
+.set-group { padding: 16px 18px; border-bottom: 1px solid var(--line); display: grid; gap: 12px; }
+.set-group h3 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+.set-group .lbl { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.set-group select, .set-group input[type=text], .set-group input[type=password] { width: 100%; }
+.hint { font-size: 12px; color: var(--dim); }
+
+/* ── toast + drag overlay ── */
+#toasts { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 60; display: grid; gap: 8px; justify-items: center; pointer-events: none; }
+.toast { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 9px; padding: 9px 14px; box-shadow: 0 8px 30px rgba(0, 0, 0, .5); animation: pop .18s ease-out; max-width: 90vw; }
+.toast.err { border-color: rgba(240, 96, 90, .5); color: #ffb3ae; }
+.toast.ok { border-color: rgba(76, 207, 127, .45); }
+@keyframes pop { from { transform: translateY(8px); opacity: 0; } }
+#dragOverlay { position: fixed; inset: 0; z-index: 70; background: rgba(8, 9, 11, .82); display: none; place-items: center; pointer-events: none; }
+body.dragging #dragOverlay { display: grid; }
+#dragOverlay div { border: 2px dashed var(--accent); border-radius: 18px; padding: 50px 70px; font-size: 18px; font-weight: 600; }
+
+@media (max-width: 640px) {
+  .brand span { display: none; }
+  .linkrow { flex-direction: column; }
+  .lib-head input { width: 140px; }
+}
+</style>
 </head>
-<body class="min-h-screen">
+<body>
 
-  <!-- Header -->
-  <header class="bg-white border-b border-slate-200 sticky top-0 z-30">
-    <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+<header>
+  <div class="bar">
+    <div class="seal">文</div>
+    <div class="brand"><b>Mojidori</b><span>catch every word</span></div>
+    <div class="spacer"></div>
+    <span id="sysPill" class="pill">checking…</span>
+    <button class="btn ghost" onclick="openSettings()" title="Settings">⚙ Settings</button>
+  </div>
+</header>
+
+<main>
+  <!-- ═════ input ═════ -->
+  <section class="card">
+    <div class="drop" id="drop" onclick="$('#fileInput').click()">
+      <div class="icon">⇪</div>
+      <div class="big">Drop recordings anywhere on this page</div>
+      <div class="muted small">or click to browse · audio or video · any format FFmpeg reads</div>
+      <input type="file" id="fileInput" multiple accept="audio/*,video/*" class="hidden">
+    </div>
+    <div class="or">or paste a link</div>
+    <form class="linkrow" onsubmit="submitLink(event)">
+      <input type="text" id="linkInput" autocomplete="off" spellcheck="false"
+             placeholder="https://youtube.com/watch?v=…  (playlists work too)">
+      <button class="btn primary" id="linkBtn" type="submit">Transcribe →</button>
+    </form>
+    <div class="opts">
+      <div class="field">
+        <span class="muted small">Quality</span>
+        <div class="seg" id="qualitySeg">
+          <button type="button" data-q="accurate" title="large-v3 · most accurate · ~5 min per 90-min lecture on an RTX 3060">Accurate</button>
+          <button type="button" data-q="quick" title="large-v3-turbo · ~1.5× faster, a few more slips — good for CPU-only PCs">Quick</button>
+          <button type="button" data-q="custom" class="hidden" title="Set in Settings">Custom</button>
+        </div>
+      </div>
+      <div class="field">
+        <span class="muted small">Language</span>
+        <select id="language">
+          {% for l in languages %}<option value="{{ l }}">{{ l }}</option>{% endfor %}
+        </select>
+      </div>
+      <span class="spacer"></span>
+      <label class="field" title="Start new files and links as soon as they arrive">
+        <span class="switch"><input type="checkbox" id="auto"><span></span></span>
+        <span class="small">Auto-start</span>
+      </label>
+    </div>
+  </section>
+
+  <!-- ═════ jobs ═════ -->
+  <section id="jobsSection" class="hidden">
+    <div class="section-head">
+      <h2>Working on</h2>
+      <span class="spacer"></span>
+      <button class="btn primary sm hidden" id="startBtn" onclick="startAll()">▶ Start</button>
+      <button class="btn ghost sm hidden" id="clearBtn" onclick="clearFinished()">Clear finished</button>
+    </div>
+    <div class="jobs" id="jobs"></div>
+  </section>
+
+  <!-- ═════ library ═════ -->
+  <section>
+    <div class="lib-head">
+      <h2>Transcripts</h2>
+      <span class="spacer"></span>
+      <input type="search" id="libSearch" placeholder="filter…" oninput="renderLibrary()">
+    </div>
+    <div class="card lib" id="library"><div class="empty">Loading…</div></div>
+  </section>
+</main>
+
+<!-- ═════ reader drawer ═════ -->
+<div id="readerScrim" class="scrim hidden" onclick="closeReader()"></div>
+<aside id="reader" class="drawer hidden" aria-label="Transcript">
+  <div class="drawer-head">
+    <div class="title" id="rTitle"></div>
+    <button class="btn ghost" onclick="closeReader()" title="Close (Esc)">✕</button>
+  </div>
+  <div class="drawer-tools">
+    <select id="promptPick" title="Attach a study prompt when copying"></select>
+    <button class="btn primary sm" onclick="copyCurrent()">Copy</button>
+    <select id="rFile" onchange="loadReaderFile()" title="Which output to view"></select>
+    <button class="btn sm" onclick="downloadCurrent()">Download</button>
+    <button class="btn sm" onclick="reveal(reader.folder)">Open folder</button>
+    <span class="spacer"></span>
+    <input type="search" id="rFind" placeholder="find in transcript…" oninput="renderReader()" style="width:190px">
+    <span id="rFindCount" class="small muted"></span>
+  </div>
+  <div class="drawer-body"><div class="reader" id="rBody"></div></div>
+</aside>
+
+<!-- ═════ settings drawer ═════ -->
+<div id="setScrim" class="scrim hidden" onclick="closeSettings()"></div>
+<aside id="settings" class="drawer narrow hidden" aria-label="Settings">
+  <div class="drawer-head">
+    <div class="title">Settings</div>
+    <button class="btn ghost" onclick="closeSettings()">✕</button>
+  </div>
+  <div class="drawer-body" style="padding:0">
+    <div class="set-group">
+      <h3>Engine</h3>
+      <div><div class="lbl">Where it runs</div><select id="provider"></select></div>
+      <div><div class="lbl">Model</div><select id="model"></select></div>
+      <div class="hint" id="providerHint"></div>
+      <div id="keyBox" class="hidden" style="display:grid;gap:8px">
+        <div class="lbl">API key</div>
+        <div class="row"><input type="password" id="apiKey" placeholder="paste key…" style="flex:1">
+          <button class="btn sm" onclick="saveKey()">Save</button>
+          <button class="btn sm" onclick="testKey()">Test</button></div>
+        <div class="hint" id="keyStatus">Stored only on this PC, in .env (git-ignored).</div>
+      </div>
+    </div>
+    <div class="set-group">
+      <h3>Transcript</h3>
+      <label class="check"><input type="checkbox" id="timestamps"><span>Timestamps at each paragraph</span></label>
+      <label class="check"><input type="checkbox" id="segments"><span>Smart paragraphs <span class="hint">— break on pauses and sentence ends</span></span></label>
+    </div>
+    <div class="set-group">
+      <h3>Audio clean-up</h3>
+      <label class="check"><input type="checkbox" id="normalize"><span>Even out volume <span class="hint">— helps quiet or far-away speakers</span></span></label>
+      <label class="check"><input type="checkbox" id="highpass"><span>Cut rumble below 80 Hz <span class="hint">— hum, AC, mic thumps</span></span></label>
       <div>
-        <h1 class="text-xl font-bold text-slate-800">🎙️ Mojidori</h1>
-        <p class="text-sm text-slate-500">Whisper-powered lecture transcription</p>
+        <div class="lbl">Target loudness: <b id="targetVal">auto</b></div>
+        <div class="row"><input type="range" id="targetDb" min="-30" max="-10" step="1" value="-20" style="flex:1;accent-color:var(--accent)">
+          <button class="btn sm" onclick="setTarget(null)">auto</button></div>
       </div>
-      <div class="flex items-center gap-3">
-        <span id="deviceBadge" class="text-xs font-medium px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">…</span>
-      </div>
+      <label class="check"><input type="checkbox" id="keep_audio"><span>Keep the cleaned-up WAV <span class="hint">— off saves ~100 MB per hour</span></span></label>
     </div>
-  </header>
-
-  <main class="max-w-6xl mx-auto px-6 py-8">
-    <div class="grid grid-cols-1 lg:grid-cols-5 gap-8">
-
-      <!-- ══════════ LEFT: settings ══════════ -->
-      <div class="lg:col-span-2 space-y-6">
-
-        <!-- Engine -->
-        <section class="bg-white rounded-xl border border-slate-200 p-5">
-          <h2 class="text-sm font-semibold text-slate-700 uppercase tracking-wider mb-3">Engine</h2>
-          <select id="provider" onchange="onProviderChange()"
-                  class="w-full rounded-lg border text-sm p-2.5 border-slate-300 mb-3">
-            {% for pid, p in providers.items() %}
-            <option value="{{ pid }}">{{ p.label }}</option>
-            {% endfor %}
-          </select>
-          <div>
-            <label class="block text-sm font-medium text-slate-600 mb-1">Model</label>
-            <select id="model" class="w-full rounded-lg border text-sm p-2.5 border-slate-300"></select>
-          </div>
-          <p id="providerHint" class="text-xs text-slate-400 mt-2"></p>
-
-          <!-- API key box (hidden for local) -->
-          <div id="keyBox" class="hidden mt-3 pt-3 border-t border-slate-100">
-            <label class="block text-sm font-medium text-slate-600 mb-1">API key</label>
-            <div class="flex gap-2">
-              <input type="password" id="apiKey" placeholder="paste key…"
-                     class="flex-1 rounded-lg border border-slate-300 text-sm p-2.5 font-mono">
-              <button onclick="toggleKeyVis()" title="show/hide"
-                      class="px-3 rounded-lg border border-slate-300 text-slate-500 hover:bg-slate-50">👁</button>
-            </div>
-            <div class="flex gap-2 mt-2">
-              <button onclick="saveKey()" class="flex-1 text-sm bg-slate-800 hover:bg-slate-900 text-white font-medium py-2 rounded-lg transition">💾 Save key</button>
-              <button onclick="testKey()" class="flex-1 text-sm bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium py-2 rounded-lg transition">🔌 Test</button>
-            </div>
-            <p id="keyStatus" class="text-xs mt-2"></p>
-            <p class="text-xs text-slate-400 mt-1">Key stays on this machine in <code class="bg-slate-100 px-1 rounded">.env</code> (chmod 600, git-ignored).</p>
-          </div>
-        </section>
-
-        <!-- Presets -->
-        <section class="bg-white rounded-xl border border-slate-200 p-5">
-          <h2 class="text-sm font-semibold text-slate-700 uppercase tracking-wider mb-3">Preset</h2>
-          <div class="space-y-2">
-            <button onclick="applyPreset('fast')" data-preset="fast"
-              class="preset-btn w-full text-left px-4 py-3 rounded-lg border-2 border-slate-200 hover:border-blue-400 transition">
-              <span class="font-semibold text-slate-800">⚡ Fast</span>
-              <span class="block text-xs text-slate-500">Small model · no timestamps</span>
-            </button>
-            <button onclick="applyPreset('balanced')" data-preset="balanced"
-              class="preset-btn w-full text-left px-4 py-3 rounded-lg border-2 border-blue-500 bg-blue-50 transition">
-              <span class="font-semibold text-slate-800">⚖️ Balanced <span class="text-[10px] font-bold text-blue-600 bg-blue-100 px-1.5 py-0.5 rounded">RECOMMENDED</span></span>
-              <span class="block text-xs text-slate-500">Best quality/speed balance</span>
-            </button>
-            <button onclick="applyPreset('best')" data-preset="best"
-              class="preset-btn w-full text-left px-4 py-3 rounded-lg border-2 border-slate-200 hover:border-blue-400 transition">
-              <span class="font-semibold text-slate-800">💎 Best Quality</span>
-              <span class="block text-xs text-slate-500">Largest model · full options · slow</span>
-            </button>
-          </div>
-        </section>
-
-        <!-- Transcription settings -->
-        <section class="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
-          <h2 class="text-sm font-semibold text-slate-700 uppercase tracking-wider">Settings</h2>
-          <div>
-            <label class="block text-sm font-medium text-slate-600 mb-1">Language</label>
-            <select id="language" class="w-full rounded-lg border text-sm p-2.5 border-slate-300">
-              <option value="Auto-detect">Auto-detect</option>
-              {% for l in languages %}{% if l != 'Auto-detect' %}
-              <option value="{{ l }}" {% if l == 'English' %}selected{% endif %}>{{ l }}</option>
-              {% endif %}{% endfor %}
-            </select>
-          </div>
-          <div class="flex flex-col gap-2">
-            <label class="flex items-center gap-2 text-sm text-slate-700">
-              <input type="checkbox" id="timestamps" checked class="rounded border-slate-300"> Include timestamps
-            </label>
-            <label class="flex items-center gap-2 text-sm text-slate-700">
-              <input type="checkbox" id="segments" checked class="rounded border-slate-300"> Smart paragraph breaks
-            </label>
-          </div>
-        </section>
-
-        <!-- Audio pipeline -->
-        <section class="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
-          <h2 class="text-sm font-semibold text-slate-700 uppercase tracking-wider">🔊 Audio pipeline</h2>
-          <label class="flex items-center gap-2 text-sm text-slate-700">
-            <input type="checkbox" id="normalize" checked class="rounded border-slate-300"> Normalize volume
-          </label>
-          <div id="audioOpts">
-            <label class="block text-sm font-medium text-slate-600 mb-1">
-              Target loudness: <span id="targetVal" class="font-mono text-blue-600">auto</span>
-            </label>
-            <div class="flex items-center gap-3">
-              <input type="range" id="targetDb" min="-30" max="-10" step="1" value="-20" class="flex-1"
-                     oninput="onTargetInput()">
-              <button onclick="resetTarget()" title="back to auto"
-                      class="text-xs px-2 py-1 rounded border border-slate-300 text-slate-500 hover:bg-slate-50">auto</button>
-            </div>
-            <label class="flex items-center gap-2 text-sm text-slate-700 mt-3">
-              <input type="checkbox" id="highpass" checked class="rounded border-slate-300">
-              High-pass filter <span class="text-xs text-slate-400">(cuts rumble / hum / mic thumps @ 80 Hz)</span>
-            </label>
-            <p class="text-xs text-slate-400 mt-2">Pipeline: analyse → high-pass → mono → 16 kHz → 2-pass gain → soft-limit → <em>verify by re-measuring</em>. Before/after stats print in the console.</p>
-          </div>
-        </section>
-
-        <!-- Queue -->
-        <section class="bg-white rounded-xl border border-slate-200 p-5">
-          <div class="flex items-center justify-between mb-3">
-            <h2 class="text-sm font-semibold text-slate-700 uppercase tracking-wider">Queue</h2>
-            <button onclick="clearQueue()" title="Remove all queued files"
-                    class="text-xs px-2 py-1 rounded border border-slate-300 text-slate-500 hover:bg-slate-50">clear</button>
-          </div>
-          <div id="queueList" class="text-sm text-slate-500"></div>
-          <label class="flex items-center gap-2 text-sm text-slate-700 mt-3 pt-3 border-t border-slate-100">
-            <input type="checkbox" id="watch" class="rounded border-slate-300">
-            👀 Watch folder <span class="text-xs text-slate-400">— auto-start when new files land</span>
-          </label>
-        </section>
-      </div>
-
-      <!-- ══════════ RIGHT: work area ══════════ -->
-      <div class="lg:col-span-3 space-y-6">
-
-        <!-- Drop zone -->
-        <div id="dropZone"
-          class="drop-zone bg-white rounded-xl border-2 border-dashed border-slate-300 p-10 text-center cursor-pointer hover:border-blue-400 transition">
-          <div class="text-4xl mb-3">🎙️</div>
-          <p class="text-lg font-medium text-slate-700">Drop audio or video files here</p>
-          <p class="text-sm text-slate-500 mt-1">or click to browse · MP3 MP4 WAV M4A FLAC + more</p>
-          <input type="file" id="fileInput" multiple accept="audio/*,video/*" class="hidden">
-        </div>
-
-        <button id="goBtn" onclick="startTranscription()"
-          class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3.5 px-6 rounded-xl transition text-lg disabled:opacity-50 disabled:cursor-not-allowed">
-          ▶ Start Transcription
-        </button>
-        <p id="estimateLine" class="text-xs text-slate-400 text-center -mt-3"></p>
-
-        <!-- Terminal console — a window into the command line -->
-        <div class="bg-white rounded-xl border border-slate-200 p-5 fade-in">
-          <div class="flex items-center justify-between mb-3">
-            <h3 class="text-sm font-semibold text-slate-700">⌨️ Live console</h3>
-            <div class="flex gap-2">
-              <button onclick="copyLog()" class="text-xs px-2.5 py-1 rounded border border-slate-300 text-slate-500 hover:bg-slate-50">copy</button>
-              <button onclick="clearLog()" class="text-xs px-2.5 py-1 rounded border border-slate-300 text-slate-500 hover:bg-slate-50">clear</button>
-            </div>
-          </div>
-          <div class="w-full bg-slate-100 rounded-full h-2 mb-3">
-            <div id="progressBar" class="bg-blue-600 h-2 rounded-full progress-bar" style="width: 0%"></div>
-          </div>
-          <div id="console"><span class="t-dim">mojidori ready — drop files, pick settings, hit start.
-everything the engine does will stream here, line by line.</span>
-</div>
-        </div>
-
-        <!-- Results -->
-        <div id="resultsSection" class="hidden bg-white rounded-xl border border-slate-200 p-5 fade-in">
-          <h3 class="text-sm font-semibold text-slate-700 mb-3">Results</h3>
-          <div id="resultsList" class="space-y-2"></div>
-        </div>
-
-        <!-- Past transcripts -->
-        <div class="bg-white rounded-xl border border-slate-200 p-5">
-          <div class="flex items-center justify-between mb-3 gap-3">
-            <h2 class="text-sm font-semibold text-slate-700 uppercase tracking-wider">Processed Transcripts</h2>
-            <select id="promptPick" title="Attach a prompt when copying"
-                    class="text-xs rounded-lg border border-slate-300 p-1.5 text-slate-600 max-w-[12rem]">
-              <option value="none">Copy: transcript only</option>
-            </select>
-          </div>
-          <div id="processedList" class="space-y-2 text-sm"></div>
-        </div>
-
-      </div>
+    <div class="set-group">
+      <h3>Folders</h3>
+      <div class="hint">Anything copied into the queue folder is picked up automatically once it finishes copying.</div>
+      <div class="small" id="queuePath" style="word-break:break-all"></div>
+      <div><button class="btn sm" onclick="reveal('__queue__')">Open queue folder</button></div>
     </div>
-  </main>
+  </div>
+</aside>
+
+<div id="dragOverlay"><div>Drop to transcribe</div></div>
+<div id="toasts"></div>
 
 <script>
 const $ = s => document.querySelector(s);
-const $$ = s => document.querySelectorAll(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const api = async (url, opts = {}) => {
+  if (opts.json !== undefined) {
+    opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(opts.json) };
+  }
+  const r = await fetch(url, opts);
+  const ct = r.headers.get('content-type') || '';
+  const data = ct.includes('json') ? await r.json() : await r.text();
+  if (!r.ok) throw new Error((data && data.error) || r.statusText);
+  return data;
+};
 
+let S = {};              // server settings
 let PROVIDERS = {};
-let eventSource = null;
-let targetAuto = true;
+const JOBS = new Map();  // id -> job
+const LOGS = new Map();  // id -> [lines]
+const openLogs = new Set();
+let LIB = [];
 
-// ── init ──
+// ─────────────── toasts ───────────────
+function toast(msg, kind = '') {
+  const t = document.createElement('div');
+  t.className = 'toast ' + kind;
+  t.textContent = msg;
+  $('#toasts').appendChild(t);
+  setTimeout(() => t.remove(), kind === 'err' ? 6000 : 3200);
+}
+
+// ─────────────── init ───────────────
 document.addEventListener('DOMContentLoaded', async () => {
-  detectDevice();
-  setupDropZone();
-  await loadProviders();
-  await loadPrompts();
-  if (!loadSettings()) applyPreset('balanced');
-  onTargetInput();
-  refreshQueue();
-  refreshProcessed();
-  setInterval(refreshQueue, 10000);   // watch-mode poll
-  document.addEventListener('change', saveSettings);
-  document.addEventListener('input', saveSettings);
-  $('#processedList').addEventListener('click', e => {
-    const btn = e.target.closest('[data-copy-folder]');
-    if (btn) copyPack(btn.dataset.copyFolder, btn.dataset.copyFile);
-  });
-  $('#queueList').addEventListener('click', e => {
-    const btn = e.target.closest('[data-del]');
-    if (btn) deleteQueued(parseInt(btn.dataset.del, 10));
-  });
+  [S, PROVIDERS] = await Promise.all([api('/api/settings'), api('/api/providers')]);
+  fillProviderSelect();
+  applySettingsToUI();
+  bindSettingInputs();
+  loadPrompts();
+  loadSystem();
+  connectEvents();
+  loadLibrary();
+  setupDrops();
+  setInterval(renderJobTimes, 1000);
 });
 
-// ── remember settings (localStorage, this browser only) ──
-const SETTING_IDS = ['provider', 'model', 'language', 'normalize', 'timestamps',
-  'segments', 'highpass', 'targetDb', 'watch', 'promptPick'];
-function saveSettings() {
+async function loadSystem() {
   try {
-    const s = { targetAuto };
-    for (const id of SETTING_IDS) {
-      const el = document.getElementById(id);
-      if (!el) continue;
-      s[id] = el.type === 'checkbox' ? el.checked : el.value;
-    }
-    localStorage.setItem('mojidori', JSON.stringify(s));
-  } catch (e) {}
-}
-function loadSettings() {
-  let s = null;
-  try { s = JSON.parse(localStorage.getItem('mojidori')); } catch (e) {}
-  if (!s) return false;
-  if (typeof s.targetAuto === 'boolean') targetAuto = s.targetAuto;
-  if (s.provider) $('#provider').value = s.provider;
-  onProviderChange();
-  for (const id of SETTING_IDS) {
-    if (id === 'provider' || !(id in s)) continue;
-    const el = document.getElementById(id);
-    if (!el) continue;
-    if (id === 'model' && s.provider !== $('#provider').value) continue;
-    if (el.type === 'checkbox') el.checked = !!s[id];
-    else el.value = s[id];
-  }
-  onTargetInput();
-  return true;
+    const s = await api('/api/system');
+    const pill = $('#sysPill');
+    if (!s.ffmpeg) { pill.textContent = 'FFmpeg missing'; pill.className = 'pill warn'; }
+    else if (s.gpu) { pill.textContent = '● ' + s.gpu.replace(/NVIDIA |GeForce /g, ''); pill.className = 'pill ok'; }
+    else if (!s.gpu_checked) { pill.textContent = 'checking GPU…'; setTimeout(loadSystem, 2500); }
+    else { pill.textContent = 'CPU mode'; pill.className = 'pill'; pill.title = 'No CUDA GPU found — transcription will be slower.'; }
+    $('#queuePath').textContent = s.queue_dir;
+  } catch (e) { $('#sysPill').textContent = 'offline'; }
 }
 
-function detectDevice() {
-  fetch('/api/queue').then(() => {
-    $('#deviceBadge').textContent = '● Connected';
-    $('#deviceBadge').className = 'text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-700';
-  }).catch(() => {
-    $('#deviceBadge').textContent = '● Offline';
-    $('#deviceBadge').className = 'text-xs font-medium px-2.5 py-1 rounded-full bg-red-100 text-red-700';
-  });
+// ─────────────── settings ───────────────
+const QUALITY = { quick: { provider: 'fast', model: 'large-v3-turbo' }, accurate: { provider: 'fast', model: 'large-v3' } };
+let saveTimer = null;
+function saveSetting(patch) {
+  Object.assign(S, patch);
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    const pending = { ...S };
+    try { S = await api('/api/settings', { json: pending }); applySettingsToUI(); }
+    catch (e) { toast('Could not save settings: ' + e.message, 'err'); }
+  }, 250);
 }
 
-// ── providers / models ──
-async function loadProviders() {
-  try {
-    const r = await fetch('/api/providers');
-    PROVIDERS = await r.json();
-  } catch (e) { PROVIDERS = { local: { models: [], default_model: '', needs_key: false } }; }
-  onProviderChange();
+function fillProviderSelect() {
+  $('#provider').innerHTML = Object.entries(PROVIDERS).map(([id, p]) =>
+    `<option value="${id}">${esc(p.label)}</option>`).join('');
 }
 
-function onProviderChange() {
-  const pid = $('#provider').value;
-  const p = PROVIDERS[pid] || { models: [], default_model: '' };
-  $('#model').innerHTML = (p.models || []).map(m =>
-    `<option value="${m}" ${m === p.default_model ? 'selected' : ''}>${m}</option>`).join('');
+function applySettingsToUI() {
+  $('#language').value = S.language;
+  $('#auto').checked = !!S.auto;
+  for (const id of ['timestamps', 'segments', 'normalize', 'highpass', 'keep_audio']) $('#' + id).checked = !!S[id];
+  $('#provider').value = S.provider;
+  const p = PROVIDERS[S.provider] || { models: [] };
+  $('#model').innerHTML = p.models.map(m => `<option ${m === S.model ? 'selected' : ''}>${m}</option>`).join('');
   $('#keyBox').classList.toggle('hidden', !p.needs_key);
   const hints = {
-    local: 'Runs on this machine. Private, free, slower. Uses GPU if available.',
-    groq: 'Cloud GPUs — free tier, ~10× faster than local. Get a free key below.',
-    openai: 'Official Whisper API. Pay-per-minute.',
+    fast: 'Runs on your GPU (or CPU). Free and private — audio never leaves this PC.',
+    local: 'The original OpenAI implementation. Slower and no live progress — mostly here for comparison.',
+    groq: 'Groq cloud — free tier, very fast. Audio is uploaded to Groq.',
+    openai: 'OpenAI cloud — about $0.36 per hour of audio. Audio is uploaded to OpenAI.',
   };
-  let hint = hints[pid] || '';
-  if (p.needs_key) {
-    hint += p.key_configured
-      ? ' ✓ Key saved on this machine.'
-      : ` <a href="${p.key_url}" target="_blank" class="text-blue-600 underline">Get a free key →</a>`;
-  }
+  let hint = hints[S.provider] || '';
+  if (p.needs_key) hint += p.key_configured ? ' ✓ Key saved.' : ` <a href="${p.key_url}" target="_blank" rel="noopener">Get a key →</a>`;
   $('#providerHint').innerHTML = hint;
-  updateEstimate(lastFiles.length > 0);
+  $('#targetVal').textContent = S.target_dbfs == null ? 'auto' : S.target_dbfs + ' dBFS';
+  if (S.target_dbfs != null) $('#targetDb').value = S.target_dbfs;
+  // quality segmented control
+  let q = 'custom';
+  for (const [k, v] of Object.entries(QUALITY)) if (v.provider === S.provider && v.model === S.model) q = k;
+  document.querySelectorAll('#qualitySeg button').forEach(b => {
+    b.classList.toggle('on', b.dataset.q === q);
+    if (b.dataset.q === 'custom') { b.classList.toggle('hidden', q !== 'custom'); b.textContent = `Custom: ${S.model}`; }
+  });
 }
 
-function toggleKeyVis() {
-  const el = $('#apiKey');
-  el.type = el.type === 'password' ? 'text' : 'password';
+function bindSettingInputs() {
+  document.querySelectorAll('#qualitySeg button').forEach(b => b.addEventListener('click', () => {
+    if (b.dataset.q === 'custom') return openSettings();
+    saveSetting({ ...QUALITY[b.dataset.q] });
+    applySettingsToUI();
+  }));
+  $('#language').addEventListener('change', e => saveSetting({ language: e.target.value }));
+  $('#auto').addEventListener('change', e => {
+    saveSetting({ auto: e.target.checked });
+    toast(e.target.checked ? 'Auto-start on — new files and links start right away' : 'Auto-start off — press Start when ready');
+  });
+  for (const id of ['timestamps', 'segments', 'normalize', 'highpass', 'keep_audio'])
+    $('#' + id).addEventListener('change', e => saveSetting({ [id]: e.target.checked }));
+  $('#provider').addEventListener('change', e => {
+    const p = PROVIDERS[e.target.value];
+    saveSetting({ provider: e.target.value, model: p.default_model });
+    applySettingsToUI();
+  });
+  $('#model').addEventListener('change', e => { saveSetting({ model: e.target.value }); applySettingsToUI(); });
+  $('#targetDb').addEventListener('input', e => setTarget(parseFloat(e.target.value)));
 }
+function setTarget(v) { saveSetting({ target_dbfs: v }); $('#targetVal').textContent = v == null ? 'auto' : v + ' dBFS'; }
+
+function openSettings() { $('#settings').classList.remove('hidden'); $('#setScrim').classList.remove('hidden'); }
+function closeSettings() { $('#settings').classList.add('hidden'); $('#setScrim').classList.add('hidden'); }
 
 async function saveKey() {
-  const provider = $('#provider').value;
   const key = $('#apiKey').value.trim();
-  if (!key) return setKeyStatus('Paste a key first.', 'text-red-500');
+  if (!key) return toast('Paste a key first', 'err');
   try {
-    const r = await fetch('/api/key', { method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, key }) });
-    const d = await r.json();
-    if (d.saved) {
-      setKeyStatus('✓ Key saved to .env', 'text-green-600');
-      $('#apiKey').value = '';
-      loadProviders();
-    } else setKeyStatus('✗ ' + (d.error || 'save failed'), 'text-red-500');
-  } catch (e) { setKeyStatus('✗ ' + e.message, 'text-red-500'); }
+    await api('/api/key', { json: { provider: S.provider, key } });
+    $('#apiKey').value = '';
+    PROVIDERS = await api('/api/providers');
+    applySettingsToUI();
+    toast('Key saved', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
 }
-
 async function testKey() {
-  const provider = $('#provider').value;
-  const key = $('#apiKey').value.trim();
-  setKeyStatus('Testing…', 'text-slate-500');
+  $('#keyStatus').textContent = 'Testing…';
   try {
-    const r = await fetch('/api/key/test', { method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, key }) });
-    const d = await r.json();
-    setKeyStatus((d.ok ? '✓ ' : '✗ ') + d.message, d.ok ? 'text-green-600' : 'text-red-500');
-  } catch (e) { setKeyStatus('✗ ' + e.message, 'text-red-500'); }
+    const d = await api('/api/key/test', { json: { provider: S.provider, key: $('#apiKey').value.trim() } });
+    $('#keyStatus').textContent = (d.ok ? '✓ ' : '✗ ') + d.message;
+  } catch (e) { $('#keyStatus').textContent = '✗ ' + e.message; }
 }
 
-function setKeyStatus(msg, cls) {
-  const el = $('#keyStatus');
-  el.textContent = msg;
-  el.className = 'text-xs mt-2 ' + cls;
-}
-
-// ── presets ──
-function applyPreset(key) {
-  $$('.preset-btn').forEach(b => {
-    b.className = 'preset-btn w-full text-left px-4 py-3 rounded-lg border-2 border-slate-200 hover:border-blue-400 transition';
+// ─────────────── inputs: drop, browse, paste, link ───────────────
+function setupDrops() {
+  let depth = 0;
+  const hasFiles = e => [...(e.dataTransfer?.types || [])].includes('Files');
+  window.addEventListener('dragenter', e => { if (hasFiles(e)) { depth++; document.body.classList.add('dragging'); } });
+  window.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; document.body.classList.remove('dragging'); } });
+  window.addEventListener('dragover', e => e.preventDefault());
+  window.addEventListener('drop', e => {
+    e.preventDefault(); depth = 0; document.body.classList.remove('dragging');
+    if (e.dataTransfer.files.length) return upload(e.dataTransfer.files);
+    const text = e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain');
+    if (text) sendLinks(text);
   });
-  const active = $(`[data-preset="${key}"]`);
-  if (active) active.className = 'preset-btn w-full text-left px-4 py-3 rounded-lg border-2 border-blue-500 bg-blue-50 transition';
-
-  const pid = $('#provider').value;
-  const models = ($('#model').options.length && [...$('#model').options].map(o => o.value)) || [];
-  const pick = (want, fallback) => models.includes(want) ? want : (models.includes(fallback) ? fallback : models[0]);
-  const presets = {
-    fast:     { local: 'small',    fast: 'tiny',     groq: 'whisper-large-v3-turbo', openai: 'whisper-1', normalize: true,  timestamps: false, segments: true },
-    balanced: { local: 'large-v3', fast: 'large-v3', groq: 'whisper-large-v3-turbo', openai: 'whisper-1', normalize: true,  timestamps: true,  segments: true },
-    best:     { local: 'large-v3', fast: 'large-v3', groq: 'whisper-large-v3',       openai: 'whisper-1', normalize: true,  timestamps: true,  segments: true },
-  };
-  const p = presets[key] || presets.balanced;
-  $('#model').value = p[pid] || models[0];
-  $('#normalize').checked = p.normalize;
-  $('#timestamps').checked = p.timestamps;
-  $('#segments').checked = p.segments;
+  $('#fileInput').addEventListener('change', e => { upload(e.target.files); e.target.value = ''; });
+  // Ctrl+V anywhere (outside text boxes) with a link or a file → go.
+  document.addEventListener('paste', e => {
+    if (e.target.closest('input, textarea, select')) return;
+    if (e.clipboardData.files.length) { e.preventDefault(); return upload(e.clipboardData.files); }
+    const text = e.clipboardData.getData('text');
+    if (/https?:\/\//i.test(text)) { e.preventDefault(); sendLinks(text); }
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeReader(); closeSettings(); } });
 }
 
-// ── gain target ──
-function onTargetInput() {
-  $('#targetVal').textContent = targetAuto ? 'auto' : ($('#targetDb').value + ' dBFS');
-}
-function resetTarget() { targetAuto = true; onTargetInput(); }
-$('#targetDb')?.addEventListener('input', () => { targetAuto = false; onTargetInput(); });
-
-// ── drop zone / upload ──
-function setupDropZone() {
-  const zone = $('#dropZone'), input = $('#fileInput');
-  zone.addEventListener('click', () => input.click());
-  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
-  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
-  zone.addEventListener('drop', e => { e.preventDefault(); zone.classList.remove('drag-over'); uploadFiles(e.dataTransfer.files); });
-  input.addEventListener('change', () => uploadFiles(input.files));
-}
-
-async function uploadFiles(fileList) {
+async function upload(files) {
   const fd = new FormData();
-  for (const f of fileList) fd.append('files', f);
-  conPrint('t-dim', `⇪ uploading ${fileList.length} file(s)…`);
+  for (const f of files) fd.append('files', f);
+  toast(`Uploading ${files.length} file${files.length > 1 ? 's' : ''}…`);
   try {
-    const r = await fetch('/api/upload', { method: 'POST', body: fd });
-    const data = await r.json();
-    conPrint('t-ok', `[OK] queued: ${data.saved.join(', ')}`);
-  } catch (e) { conPrint('t-err', '[ERR] upload failed: ' + e.message); }
-  refreshQueue();
+    const d = await api('/api/upload', { method: 'POST', body: fd });
+    toast(`Added ${d.jobs.length} file${d.jobs.length > 1 ? 's' : ''}${S.auto ? '' : ' — press Start when ready'}`, 'ok');
+  } catch (e) { toast(e.message, 'err'); }
 }
 
-// ── queue / processed + watch mode ──
-let running = false;
-let firstPoll = true;
-let lastSeen = new Set();
-let lastFiles = [];
-
-// ── queue management + cost clarity ──
-async function deleteQueued(i) {
-  const f = lastFiles[i];
-  if (!f) return;
-  try {
-    await fetch(`/api/queue/${encodeURIComponent(f.name)}`, { method: 'DELETE' });
-    conPrint('t-dim', `🗑 removed ${f.name} from queue`);
-  } catch (e) {}
-  refreshQueue();
+function submitLink(e) {
+  e.preventDefault();
+  const text = $('#linkInput').value.trim();
+  if (text) sendLinks(text).then(ok => { if (ok) $('#linkInput').value = ''; });
 }
 
-async function clearQueue() {
+async function sendLinks(text) {
+  const btn = $('#linkBtn');
+  btn.disabled = true; btn.textContent = 'Reading link…';
   try {
-    const r = await fetch('/api/queue/clear', { method: 'POST' });
-    const d = await r.json();
-    conPrint('t-dim', `🗑 queue cleared (${d.cleared} file(s))`);
-  } catch (e) {}
-  refreshQueue();
+    const d = await api('/api/url', { json: { text } });
+    toast(d.jobs.length > 1 ? `Added ${d.jobs.length} videos from the playlist` : `Added “${d.jobs[0].name}”`, 'ok');
+    d.errors?.forEach(er => toast(er, 'err'));
+    return true;
+  } catch (e) { toast(e.message, 'err'); return false; }
+  finally { btn.disabled = false; btn.textContent = 'Transcribe →'; }
 }
 
-async function updateEstimate(hasFiles) {
-  const el = $('#estimateLine');
-  if (!hasFiles) { el.textContent = ''; return; }
-  try {
-    const r = await fetch('/api/estimate');
-    const d = await r.json();
-    if (d.unknown || !d.total_min) {
-      el.textContent = 'Free on Local, Local Fast & Groq · OpenAI is pay-per-minute';
-      return;
+// ─────────────── jobs (live via SSE) ───────────────
+function connectEvents() {
+  const es = new EventSource('/api/events');
+  es.addEventListener('snapshot', e => { JOBS.clear(); JSON.parse(e.data).forEach(j => JOBS.set(j.id, j)); renderJobs(); });
+  es.addEventListener('job', e => {
+    const j = JSON.parse(e.data);
+    const prev = JOBS.get(j.id);
+    JOBS.set(j.id, j);
+    if (prev && prev.status !== 'done' && j.status === 'done') { loadLibrary(); toast(`✓ ${j.name}`, 'ok'); }
+    if (prev && prev.status !== 'error' && j.status === 'error') toast(`${j.name}: ${j.error}`, 'err');
+    renderJobs();
+  });
+  es.addEventListener('log', e => {
+    const { id, line } = JSON.parse(e.data);
+    if (!LOGS.has(id)) LOGS.set(id, []);
+    LOGS.get(id).push(line);
+    if (openLogs.has(id)) appendLogLine(id, line);
+  });
+  es.addEventListener('removed', e => { JOBS.delete(JSON.parse(e.data).id); renderJobs(); });
+  es.onerror = () => { $('#sysPill').textContent = 'reconnecting…'; $('#sysPill').className = 'pill warn'; };
+  es.onopen = () => loadSystem();
+}
+
+const STATUS_ORDER = { running: 0, queued: 1, waiting: 2, error: 3, cancelled: 4, done: 5 };
+function renderJobs() {
+  const list = [...JOBS.values()].sort((a, b) =>
+    (STATUS_ORDER[a.status] - STATUS_ORDER[b.status]) || (a.status === 'done' ? b.finished - a.finished : a.created - b.created));
+  $('#jobsSection').classList.toggle('hidden', list.length === 0);
+  const waiting = list.filter(j => j.status === 'waiting').length;
+  $('#startBtn').classList.toggle('hidden', !waiting);
+  $('#startBtn').textContent = `▶ Start ${waiting} waiting`;
+  $('#clearBtn').classList.toggle('hidden', !list.some(j => j.status === 'done'));
+
+  const box = $('#jobs');
+  const keep = new Set(list.map(j => j.id));
+  [...box.children].forEach(el => { if (!keep.has(el.dataset.id)) el.remove(); });
+  list.forEach((j, i) => {
+    let el = box.querySelector(`[data-id="${j.id}"]`);
+    if (!el) {
+      el = document.createElement('div');
+      el.dataset.id = j.id;
+      el.innerHTML = `
+        <div class="job-top">
+          <div class="job-ico"></div>
+          <div class="job-main"><div class="job-name"></div><div class="job-stage"></div></div>
+          <div class="job-actions"></div>
+        </div>
+        <div class="progress"><div></div></div>`;
+      el.addEventListener('click', ev => jobClick(ev, j.id));
     }
-    const pid = $('#provider').value;
-    const cost = d.costs[pid] ?? 0;
-    el.textContent = `≈${d.total_min} min audio · ` +
-      (cost > 0 ? `this run ≈ $${cost.toFixed(2)} on OpenAI (Groq & local: $0)` : 'this run is FREE on ' + pid);
-  } catch (e) {}
+    if (box.children[i] !== el) box.insertBefore(el, box.children[i] || null);
+    el.className = `card job ${j.status}`;
+    const ico = el.querySelector('.job-ico');
+    ico.className = 'job-ico ' + j.kind;
+    ico.textContent = j.kind === 'url' ? '▶' : '♪';
+    el.querySelector('.job-name').textContent = j.name;
+    el.querySelector('.job-name').title = j.src;
+    el.querySelector('.job-stage').textContent = stageText(j);
+    const bar = el.querySelector('.progress');
+    bar.classList.toggle('hidden', !['running', 'queued'].includes(j.status));
+    bar.classList.toggle('indet', j.status === 'running' && j.pct == null);
+    bar.firstElementChild.style.width = (j.status === 'queued' ? 0 : (j.pct || 0)) + '%';
+    el.querySelector('.job-actions').innerHTML = jobButtons(j);
+  });
 }
 
-async function refreshQueue() {
-  try {
-    const r = await fetch('/api/queue');
-    const files = await r.json();
-    lastFiles = files;
-    $('#queueList').innerHTML = files.length === 0
-      ? '<p class="text-slate-400 italic">Queue empty — drop files above</p>'
-      : files.map((f, i) => `
-        <div class="flex items-center justify-between py-1.5 border-b border-slate-100 last:border-0 gap-2">
-          <span class="text-slate-700 truncate">${f.name}
-            ${f.done ? '<span class="ml-1 text-[10px] font-bold text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">DONE BEFORE</span>' : ''}
-          </span>
-          <span class="flex items-center gap-2 shrink-0">
-            <span class="text-xs text-slate-400">${(f.size / 1024 / 1024).toFixed(1)} MB</span>
-            <button data-del="${i}" title="Remove from queue"
-               class="text-xs px-1.5 py-0.5 rounded border border-slate-200 text-slate-400 hover:text-red-600 hover:border-red-300">✕</button>
-          </span>
-        </div>`).join('');
-    updateEstimate(files.length > 0);
-
-    // Watch mode: auto-start when genuinely new files land (not on first paint,
-    // not while busy, not for files already seen — failed ones stay put).
-    const names = new Set(files.map(f => f.name));
-    if (firstPoll) {
-      firstPoll = false;
-    } else if ($('#watch')?.checked && !running && files.length > 0) {
-      const fresh = [...names].filter(n => !lastSeen.has(n));
-      if (fresh.length > 0) {
-        conPrint('t-api', `👁 watch: new file(s) → auto-starting (${fresh.join(', ')})`);
-        startTranscription();
-      }
-    }
-    lastSeen = names;
-  } catch (e) {}
+function fmtDur(sec) {
+  if (sec < 60) return `${Math.max(1, Math.round(sec))}s`;
+  const m = Math.round(sec / 60);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${m % 60}m`;
 }
-
-async function refreshProcessed() {
-  try {
-    const r = await fetch('/api/processed');
-    const folders = await r.json();
-    $('#processedList').innerHTML = folders.length === 0
-      ? '<p class="text-slate-400 italic">No transcripts yet</p>'
-      : folders.map(f => `
-        <div class="py-2 border-b border-slate-100 last:border-0">
-          <span class="font-medium text-slate-700">📁 ${f.name}</span>
-          ${f.transcripts.map(t => `
-            <div class="flex items-center gap-2 ml-5">
-              <a href="#" onclick="viewTranscript('${f.name}','${t}'); return false"
-                 class="text-blue-600 hover:underline">📄 ${t}</a>
-              <button data-copy-folder="${f.name}" data-copy-file="${t}" title="Copy transcript (+ selected prompt) to clipboard"
-                 class="text-xs px-2 py-0.5 rounded border border-slate-300 text-slate-500 hover:bg-slate-50">📋 copy</button>
-            </div>`).join('')}
-        </div>`).join('');
-  } catch (e) {}
+function stageText(j) {
+  if (j.status === 'done') {
+    const r = j.result || {};
+    const dur = r.duration_min == null ? '?' : r.duration_min < 1 ? '<1' : Math.round(r.duration_min);
+    return `Done · ${dur} min of audio in ${fmtDur((r.elapsed_min || 0) * 60)} · ${(r.words || 0).toLocaleString()} words`
+      + (r.uncertain ? ` · ${r.uncertain} to double-check` : '');
+  }
+  if (j.status === 'error') return 'Failed — ' + (j.error || 'unknown error');
+  if (j.status === 'waiting') return 'Waiting — press Start (or turn on Auto-start)';
+  if (j.status !== 'running') return j.stage;
+  let t = j.stage + '…';
+  if (j.pct != null) {
+    t = `${j.stage} ${Math.floor(j.pct)}%`;
+    const el = (Date.now() / 1000) - (j.stage_started || Date.now() / 1000);
+    if (j.pct > 3 && el > 5) t += ` · about ${fmtDur(el * (100 - j.pct) / j.pct)} left`;
+  }
+  return t;
 }
-
-// ── copy-with-prompt ──
-async function loadPrompts() {
-  try {
-    const r = await fetch('/api/prompts');
-    const prompts = await r.json();
-    $('#promptPick').innerHTML = prompts.map(p =>
-      `<option value="${p.id}">${p.id === 'none' ? 'Copy: transcript only' : 'Copy: transcript + ' + p.title}</option>`).join('');
-  } catch (e) {}
+function renderJobTimes() {
+  for (const j of JOBS.values()) if (j.status === 'running') {
+    const el = document.querySelector(`[data-id="${j.id}"] .job-stage`);
+    if (el) el.textContent = stageText(j);
+  }
 }
-
-async function copyPack(folder, file) {
-  const prompt = $('#promptPick')?.value || 'none';
-  try {
-    const r = await fetch(`/api/pack?folder=${encodeURIComponent(folder)}&file=${encodeURIComponent(file)}&prompt=${prompt}`);
-    if (!r.ok) return conPrint('t-err', '[ERR] copy failed');
-    const text = await r.text();
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch (e) {
-      const ta = document.createElement('textarea');
-      ta.value = text; document.body.appendChild(ta); ta.select();
-      document.execCommand('copy'); ta.remove();
-    }
-    conPrint('t-ok', `[OK] copied ${file}${prompt !== 'none' ? ' + prompt' : ''} (${(text.length / 1024).toFixed(0)} KB) — paste into your AI`);
-  } catch (e) { conPrint('t-err', '[ERR] copy failed: ' + e.message); }
+function jobButtons(j) {
+  const b = (act, label, title, cls = 'ghost sm') => `<button class="btn ${cls}" data-act="${act}" title="${title}">${label}</button>`;
+  const logBtn = b('log', openLogs.has(j.id) ? 'Hide log' : 'Log', 'Show what the engine is doing');
+  switch (j.status) {
+    case 'done': return b('open', 'Open', 'Read transcript', 'sm') + b('copy', 'Copy', 'Copy transcript to clipboard', 'sm') + logBtn + b('remove', '✕', 'Remove from this list');
+    case 'running': return logBtn + b('cancel', 'Cancel', 'Stop this job');
+    case 'error': case 'cancelled': return b('retry', 'Retry', 'Try again', 'sm') + logBtn + b('remove', '✕', 'Remove (a queued file is moved to archive/_removed)');
+    default: return b('cancel', '✕', 'Don’t transcribe this');
+  }
 }
+async function jobClick(ev, id) {
+  const btn = ev.target.closest('[data-act]');
+  if (!btn) return;
+  const j = JOBS.get(id), act = btn.dataset.act;
+  if (act === 'log') return toggleLog(id);
+  if (act === 'open') return openReader(j.result.folder);
+  if (act === 'copy') {
+    const item = LIB.find(x => x.name === j.result.folder);
+    return copyPack(j.result.folder, item ? item.transcript : `${j.result.folder}_transcript.txt`, 'none');
+  }
+  try { await api(`/api/jobs/${id}/${act}`, { json: {} }); } catch (e) { toast(e.message, 'err'); }
+}
+async function toggleLog(id) {
+  const card = document.querySelector(`[data-id="${id}"]`);
+  let box = card.querySelector('.job-log');
+  if (openLogs.has(id)) { openLogs.delete(id); box?.remove(); renderJobs(); return; }
+  openLogs.add(id);
+  box = document.createElement('div');
+  box.className = 'job-log';
+  card.appendChild(box);
+  try { LOGS.set(id, await api(`/api/jobs/${id}/log`)); } catch (e) {}
+  (LOGS.get(id) || []).forEach(l => appendLogLine(id, l));
+  renderJobs();
+}
+function appendLogLine(id, line) {
+  const box = document.querySelector(`[data-id="${id}"] .job-log`);
+  if (!box) return;
+  const d = document.createElement('div');
+  d.className = /\[ERR\]/.test(line) ? 'l-err' : /\[WARN\]/.test(line) ? 'l-warn' : /\[OK\]/.test(line) ? 'l-ok'
+    : /\[STEP/.test(line) ? 'l-step' : /\[AUDIO\]/.test(line) ? 'l-audio' : /\[API\]/.test(line) ? 'l-api' : '';
+  d.textContent = line;
+  const pinned = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  box.appendChild(d);
+  if (pinned) box.scrollTop = box.scrollHeight;
+}
+async function startAll() { try { await api('/api/start', { json: {} }); } catch (e) { toast(e.message, 'err'); } }
+async function clearFinished() { try { await api('/api/jobs/clear', { json: {} }); } catch (e) {} }
 
-// ── transcription ──
-async function startTranscription() {
-  running = true;
-  const provider = $('#provider').value;
-  const p = PROVIDERS[provider] || {};
-  if (p.needs_key && !p.key_configured && !$('#apiKey').value.trim()) {
-    conPrint('t-err', `[ERR] ${provider} needs an API key — paste one in Engine settings first.`);
+// ─────────────── library ───────────────
+async function loadLibrary() {
+  try { LIB = await api('/api/library'); } catch (e) { LIB = []; }
+  renderLibrary();
+}
+function renderLibrary() {
+  const q = $('#libSearch').value.trim().toLowerCase();
+  const items = LIB.filter(x => !q || x.name.toLowerCase().includes(q));
+  const box = $('#library');
+  if (!items.length) {
+    box.innerHTML = `<div class="empty">${LIB.length ? 'Nothing matches.' : 'No transcripts yet — drop a recording or paste a link above.'}</div>`;
     return;
   }
-  const channel = crypto.randomUUID().slice(0, 12);
-  const body = {
-    provider,
-    model: $('#model').value,
-    language: $('#language').value,
-    normalize: $('#normalize').checked,
-    timestamps: $('#timestamps').checked,
-    segments: $('#segments').checked,
-    api_key: $('#apiKey').value.trim() || undefined,
-    target_dbfs: targetAuto ? null : parseFloat($('#targetDb').value),
-    highpass: $('#highpass').checked,
-    channel,
-  };
+  box.innerHTML = items.map(x => {
+    const bits = [new Date(x.mtime * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })];
+    if (x.duration_min != null) bits.push(x.duration_min < 1 ? '<1 min' : `${Math.round(x.duration_min)} min`);
+    if (x.words) bits.push(`${x.words.toLocaleString()} words`);
+    if (x.source) bits.push('from link');
+    return `<div class="lib-row" data-name="${esc(x.name)}">
+      <div style="flex:1;min-width:0"><div class="name">${esc(x.name)}</div><div class="meta">${esc(bits.join(' · '))}</div></div>
+      <div class="acts">
+        <button class="btn ghost sm" data-act="copy" title="Copy transcript">Copy</button>
+        <button class="btn ghost sm" data-act="folder" title="Open folder">Folder</button>
+      </div></div>`;
+  }).join('');
+}
+$('#library').addEventListener('click', e => {
+  const row = e.target.closest('.lib-row');
+  if (!row) return;
+  const item = LIB.find(x => x.name === row.dataset.name);
+  const act = e.target.closest('[data-act]')?.dataset.act;
+  if (act === 'copy') return copyPack(item.name, item.transcript, 'none');
+  if (act === 'folder') return reveal(item.name);
+  openReader(item.name);
+});
 
-  $('#goBtn').disabled = true;
-  $('#goBtn').textContent = '⏳ Processing… watch the console ↓';
-  $('#progressBar').style.width = '2%';
-  conPrint('t-step', `── session ${channel} · provider=${provider} · model=${body.model} ──`);
-  listenSSE(channel);
+async function reveal(folder) {
+  try { await api('/api/reveal', { json: { folder } }); } catch (e) { toast(e.message, 'err'); }
+}
 
+// ─────────────── copy (with optional study prompt) ───────────────
+async function loadPrompts() {
   try {
-    await fetch('/api/transcribe', { method: 'POST',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  } catch (e) {
-    conPrint('t-err', '[ERR] ' + e.message);
-    resetUI();
-  }
-}
-
-function listenSSE(channel) {
-  if (eventSource) eventSource.close();
-  eventSource = new EventSource(`/api/sse/${channel}`);
-  let n = 0;
-
-  eventSource.addEventListener('progress', e => {
-    n++;
-    $('#progressBar').style.width = Math.min(95, 3 + n * 4) + '%';
-    conPrint(null, e.data);
-  });
-  eventSource.addEventListener('started', e => conPrint('t-dim', '▸ ' + e.data));
-  eventSource.addEventListener('done', e => {
-    $('#progressBar').style.width = '100%';
-    conPrint('t-ok', '[OK] session complete');
-    try { showResults(JSON.parse(e.data)); } catch (err) {}
-    resetUI(); refreshQueue(); refreshProcessed();
-    eventSource.close();
-  });
-  eventSource.addEventListener('error', e => {
-    if (e.data) conPrint('t-err', '[ERR] ' + e.data);
-    resetUI(); eventSource.close();
-  });
-  eventSource.onerror = () => setTimeout(() => {
-    if (eventSource.readyState === EventSource.CLOSED) resetUI();
-  }, 3000);
-}
-
-// prefix → color class
-function styleFor(line) {
-  if (line.includes('[STEP')) return 't-step';
-  if (line.includes('[OK]')) return 't-ok';
-  if (line.includes('[WARN]')) return 't-warn';
-  if (line.includes('[ERR]')) return 't-err';
-  if (line.includes('[AUDIO]')) return 't-audio';
-  if (line.includes('[API]')) return 't-api';
-  if (line.startsWith('──') || line.startsWith('▸')) return 't-dim';
-  return '';
-}
-
-function conPrint(cls, msg) {
-  const box = $('#console');
-  const line = document.createElement('div');
-  line.className = cls || styleFor(msg);
-  line.textContent = msg;
-  box.appendChild(line);
-  box.scrollTop = box.scrollHeight;   // pin to bottom like a terminal
-  box.classList.add('cursor-blink');
-}
-
-function clearLog() { $('#console').innerHTML = ''; }
-function copyLog() {
-  navigator.clipboard.writeText($('#console').innerText)
-    .then(() => conPrint('t-dim', '(log copied to clipboard)'));
-}
-
-function showResults(result) {
-  const el = $('#resultsSection');
-  el.classList.remove('hidden');
-  if (result.total !== undefined) {
-    $('#resultsList').innerHTML = `
-      <div class="text-sm text-slate-700 mb-2">
-        <strong>${result.successful}</strong> of ${result.total} transcribed
-        ${result.failed > 0 ? `<span class="text-red-500">(${result.failed} failed)</span>` : '<span class="text-green-600">✓ all good</span>'}
-        ${result.ping ? '<span class="text-slate-400">· 📱 ping sent</span>' : ''}
-      </div>
-      ${result.results.map(r => `
-        <div class="text-sm ${r.ok ? 'text-green-700' : 'text-red-600'}">
-          ${r.ok ? '✓' : '✗'} ${r.file}${r.ok ? ` — ${r.duration_min} min · ${r.language} · ${r.elapsed_min} min wall` : ` — ${r.error || ''}`}
-        </div>`).join('')}`;
-  }
-}
-
-function resetUI() {
-  running = false;
-  $('#goBtn').disabled = false;
-  $('#goBtn').textContent = '▶ Start Transcription';
-  setTimeout(() => { $('#progressBar').style.width = '0%'; }, 1500);
-}
-
-async function viewTranscript(folder, filename) {
-  try {
-    const r = await fetch(`/api/transcript/${folder}/${filename}`);
-    const text = await r.text();
-    const w = window.open('', '_blank');
-    w.document.write(`<html><head><title>${filename}</title>
-      <style>body{font-family:monospace;max-width:900px;margin:2em auto;white-space:pre-wrap;line-height:1.6;color:#1f2937;}</style>
-      </head><body>${text.replace(/</g,'&lt;')}</body></html>`);
+    const ps = await api('/api/prompts');
+    $('#promptPick').innerHTML = ps.map(p => `<option value="${p.id}">${p.id === 'none' ? 'Copy: transcript only' : 'Copy with: ' + esc(p.title)}</option>`).join('');
   } catch (e) {}
 }
-</script>
+async function copyPack(folder, file, prompt) {
+  try {
+    const text = await api(`/api/pack?folder=${encodeURIComponent(folder)}&file=${encodeURIComponent(file)}&prompt=${prompt}`);
+    await copyText(text);
+    toast(`Copied ${prompt === 'none' ? 'transcript' : 'transcript + prompt'} (${Math.round(text.length / 1024)} KB) — paste it into your AI`, 'ok');
+  } catch (e) { toast('Copy failed: ' + e.message, 'err'); }
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); }
+  catch (e) {
+    const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta);
+    ta.select(); document.execCommand('copy'); ta.remove();
+  }
+}
 
+// ─────────────── reader ───────────────
+const reader = { folder: null, file: null, text: '', source: null };
+async function openReader(folder) {
+  if (!LIB.find(x => x.name === folder)) await loadLibrary();
+  const item = LIB.find(x => x.name === folder);
+  if (!item) return toast('Transcript not found', 'err');
+  Object.assign(reader, { folder, file: item.transcript, source: item.source });
+  $('#rTitle').textContent = folder;
+  const viewable = item.files.filter(f => /\.(txt|srt|vtt|md)$/.test(f));
+  $('#rFile').innerHTML = viewable.map(f => `<option value="${esc(f)}" ${f === item.transcript ? 'selected' : ''}>${esc(f === item.transcript ? 'Transcript' : f.split('.').pop().toUpperCase() + ' subtitles')}</option>`).join('');
+  $('#rFind').value = '';
+  $('#reader').classList.remove('hidden'); $('#readerScrim').classList.remove('hidden');
+  loadReaderFile();
+}
+async function loadReaderFile() {
+  reader.file = $('#rFile').value;
+  $('#rBody').innerHTML = '<p class="muted">Loading…</p>';
+  try { reader.text = await api(`/api/file/${encodeURIComponent(reader.folder)}/${encodeURIComponent(reader.file)}`); }
+  catch (e) { reader.text = ''; $('#rBody').textContent = e.message; return; }
+  renderReader();
+}
+function highlight(html, q) {
+  if (!q) return html;
+  const re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+  return html.split(/(<[^>]+>)/).map(part => part.startsWith('<') ? part : part.replace(re, '<mark>$1</mark>')).join('');
+}
+function tsLink(ts) {
+  const [h, m, s] = ts.split(':').map(Number);
+  const sec = h * 3600 + m * 60 + s;
+  if (reader.source && /youtu\.?be/.test(reader.source)) {
+    const u = new URL(reader.source); u.searchParams.set('t', sec + 's');
+    return `<a class="ts" href="${esc(u)}" target="_blank" rel="noopener" title="Play from here">${ts}</a>`;
+  }
+  return `<span class="ts">${ts}</span>`;
+}
+function renderReader() {
+  const q = $('#rFind').value.trim();
+  const text = reader.text;
+  let html;
+  if (!reader.file.endsWith('_transcript.txt')) {
+    html = `<pre>${esc(text)}</pre>`;
+  } else {
+    // header block · paragraphs · optional "segments to verify" · footer
+    // layout: ===\nTITLE\n===\nmeta\n===\n\nbody[\n---\nverify]\n\n===\nEND…\n===
+    const parts = text.split(/\n={20,}\n/);
+    const meta = parts[1] || '';
+    let body = parts[2] || '';
+    let verify = '';
+    const vi = body.indexOf('\n' + '-'.repeat(78) + '\n');
+    if (vi >= 0) { verify = body.slice(vi).replace(/^\n-+\n/, ''); body = body.slice(0, vi); }
+    html = `<div class="hdr">${esc(meta.trim())}</div>` +
+      body.trim().split(/\n\s*\n/).map(p => {
+        const m = p.match(/^\[(\d\d:\d\d:\d\d)\]\s*([\s\S]*)$/);
+        return m ? `<p>${tsLink(m[1])}${esc(m[2])}</p>` : `<p>${esc(p)}</p>`;
+      }).join('') +
+      (verify ? `<div class="verify">${esc(verify.trim())}</div>` : '');
+    if (!body.trim()) html = `<pre>${esc(text)}</pre>`;
+  }
+  $('#rBody').innerHTML = highlight(html, q);
+  const n = q ? $('#rBody').querySelectorAll('mark').length : 0;
+  $('#rFindCount').textContent = q ? `${n} found` : '';
+  if (n) $('#rBody').querySelector('mark').scrollIntoView({ block: 'center' });
+}
+function closeReader() { $('#reader').classList.add('hidden'); $('#readerScrim').classList.add('hidden'); }
+function copyCurrent() {
+  const item = LIB.find(x => x.name === reader.folder);
+  copyPack(reader.folder, item.transcript, $('#promptPick').value);
+}
+function downloadCurrent() {
+  location.href = `/api/file/${encodeURIComponent(reader.folder)}/${encodeURIComponent(reader.file)}?download=1`;
+}
+</script>
 </body>
 </html>

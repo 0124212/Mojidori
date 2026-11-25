@@ -1,39 +1,55 @@
 #!/usr/bin/env python3
 """
-Mojidori — Flask web UI.
-Cross-platform: works identically on Windows, macOS, and Linux.
+Mojidori — Flask web UI + background job worker.
+
+How the "auto" part works:
+  * Every input (a dropped file, a file copied into queue/, a pasted link)
+    becomes a Job.
+  * One worker thread runs jobs in order, so two runs can never fight over
+    the GPU or the same file.
+  * A folder watcher adds files that land in queue/ — but only after their
+    size has stopped changing, so half-copied recordings are never touched.
+  * Auto-start on: new jobs run immediately. Off: they wait for "Start".
+  * The browser is just a view: it gets live job updates over one SSE stream,
+    and closing the tab doesn't stop anything.
 """
 
+import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
-import json
-import queue
 import threading
-import webbrowser
+import time
+import uuid
 from pathlib import Path
-from datetime import datetime
 
-from flask import Flask, render_template, request, jsonify, Response, send_from_directory
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
 from core import (
-    PRESETS, LANGUAGES, MODEL_SIZES, PROVIDERS,
-    get_audio_files, transcribe_file, transcribe_queue,
-    resolve_api_key, test_api_key, archive_original,
-    extract_class_code, maybe_ping_ntfy,
+    LANGUAGES, PROVIDERS, Cancelled, archive_original, download_audio,
+    expand_url, find_urls, get_audio_files, maybe_ping_ntfy, resolve_api_key,
+    safe_name, test_api_key, transcribe_file,
 )
 
 app = Flask(__name__)
-app.secret_key = os.urandom(24)
 
-BASE_DIR = Path(__file__).parent.resolve()
-QUEUE_DIR = BASE_DIR / "queue"
-PROCESSED_DIR = BASE_DIR / "processed"
-ARCHIVE_DIR = BASE_DIR / "archive"
-QUEUE_DIR.mkdir(exist_ok=True)
-PROCESSED_DIR.mkdir(exist_ok=True)
-ARCHIVE_DIR.mkdir(exist_ok=True)
+RES_DIR = Path(__file__).parent.resolve()   # bundled files (prompts, templates)
+if getattr(sys, "frozen", False):          # PyInstaller EXE: data lives beside it
+    BASE_DIR = Path(sys.executable).parent.resolve()
+else:
+    BASE_DIR = RES_DIR
+# MOJIDORI_HOME moves the data folders (queue/processed/archive) elsewhere.
+DATA_DIR = Path(os.environ.get("MOJIDORI_HOME") or BASE_DIR).resolve()
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+QUEUE_DIR = DATA_DIR / "queue"
+PROCESSED_DIR = DATA_DIR / "processed"
+ARCHIVE_DIR = DATA_DIR / "archive"
+DOWNLOAD_DIR = DATA_DIR / "downloads"
+SETTINGS_FILE = DATA_DIR / "settings.json"
+for _d in (QUEUE_DIR, PROCESSED_DIR, ARCHIVE_DIR, DOWNLOAD_DIR):
+    _d.mkdir(exist_ok=True)
 
 # Copy-with-prompt packs: id -> prompt file (allowlist, never user paths)
 PROMPTS = {
@@ -42,174 +58,396 @@ PROMPTS = {
     "summary": "prompt_descriptive_summary.md",
 }
 
-# SSE progress channels: one queue per client session
-_progress_channels: dict[str, queue.Queue] = {}
+VIEWABLE = {".txt", ".srt", ".vtt", ".md", ".json"}
+
+# ── settings (server-side, so the worker and watcher use them too) ──────────
+
+DEFAULT_SETTINGS = {
+    "auto": True,              # start jobs as soon as they arrive
+    "provider": "fast",
+    "model": "large-v3",
+    "language": "English",
+    "timestamps": True,
+    "segments": True,
+    "normalize": True,
+    "highpass": True,
+    "target_dbfs": None,
+    "keep_audio": False,       # keep the cleaned-up WAV next to the transcript
+    "device": "auto",
+}
+_settings_lock = threading.Lock()
 
 
-def _make_channel() -> str:
-    import uuid
-    ch = uuid.uuid4().hex[:12]
-    _progress_channels[ch] = queue.Queue()
-    return ch
+def load_settings() -> dict:
+    s = dict(DEFAULT_SETTINGS)
+    try:
+        s.update(json.loads(SETTINGS_FILE.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        pass
+    if s["provider"] not in PROVIDERS:
+        s["provider"] = DEFAULT_SETTINGS["provider"]
+    if s["model"] not in PROVIDERS[s["provider"]]["models"]:
+        s["model"] = PROVIDERS[s["provider"]]["default_model"]
+    return s
 
 
-def _emit(channel: str, event: str, data: str):
-    q = _progress_channels.get(channel)
-    if q:
-        q.put(f"event: {event}\ndata: {data}\n\n")
+def save_settings(patch: dict) -> dict:
+    with _settings_lock:
+        s = load_settings()
+        for k, v in patch.items():
+            if k in DEFAULT_SETTINGS:
+                s[k] = v
+        if s["provider"] not in PROVIDERS:
+            s["provider"] = DEFAULT_SETTINGS["provider"]
+        if s["model"] not in PROVIDERS[s["provider"]]["models"]:
+            s["model"] = PROVIDERS[s["provider"]]["default_model"]
+        SETTINGS_FILE.write_text(json.dumps(s, indent=2), encoding="utf-8")
+        return s
 
 
-# ── Routes ──────────────────────────────────────────────────────────────
+# ── jobs ────────────────────────────────────────────────────────────────────
+
+ACTIVE = {"waiting", "queued", "running"}
+
+
+class Job:
+    def __init__(self, kind: str, name: str, src: str):
+        self.id = uuid.uuid4().hex[:10]
+        self.kind = kind            # "file" | "url"
+        self.name = name
+        self.src = src              # file path or URL
+        self.status = "queued"      # waiting|queued|running|done|error|cancelled
+        self.stage = "Queued"
+        self.pct = None
+        self.error = None
+        self.result = None
+        self.log: list[str] = []
+        self.created = time.time()
+        self.stage_started = None
+        self.finished = None
+        self.cancel = threading.Event()
+        self._sig = None            # file identity (size, mtime) for the watcher
+
+    def public(self) -> dict:
+        return {
+            "id": self.id, "kind": self.kind, "name": self.name, "src": self.src,
+            "status": self.status, "stage": self.stage,
+            "pct": None if self.pct is None else round(self.pct, 1),
+            "error": self.error, "result": self.result,
+            "created": self.created, "stage_started": self.stage_started,
+            "finished": self.finished,
+        }
+
+
+class JobManager:
+    def __init__(self):
+        self.jobs: dict[str, Job] = {}
+        self.lock = threading.RLock()
+        self.wake = threading.Event()
+        self.subscribers: list[queue.Queue] = []
+        self._last_push: dict[str, float] = {}
+        self._done_since_idle = 0
+        threading.Thread(target=self._worker, daemon=True, name="worker").start()
+        threading.Thread(target=self._watcher, daemon=True, name="watcher").start()
+
+    # — events —
+    def _broadcast(self, event: str, data: dict):
+        msg = f"event: {event}\ndata: {json.dumps(data)}\n\n"
+        with self.lock:
+            subs = list(self.subscribers)
+        for q in subs:
+            try:
+                q.put_nowait(msg)
+            except queue.Full:
+                pass
+
+    def push(self, job: Job, force: bool = True):
+        now = time.time()
+        if not force and now - self._last_push.get(job.id, 0) < 0.3:
+            return  # throttle per-segment progress spam
+        self._last_push[job.id] = now
+        self._broadcast("job", job.public())
+
+    def subscribe(self) -> queue.Queue:
+        q: queue.Queue = queue.Queue(maxsize=5000)
+        with self.lock:
+            self.subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q):
+        with self.lock:
+            if q in self.subscribers:
+                self.subscribers.remove(q)
+
+    # — adding —
+    def _initial_status(self) -> str:
+        return "queued" if load_settings()["auto"] else "waiting"
+
+    def add_file(self, path: Path, status: str = None) -> Job:
+        with self.lock:
+            for j in self.jobs.values():
+                if j.kind == "file" and j.src == str(path) and j.status in ACTIVE:
+                    return j
+            job = Job("file", path.stem, str(path))
+            job.status = status or self._initial_status()
+            job.stage = "Waiting for Start" if job.status == "waiting" else "Queued"
+            try:
+                st = path.stat()
+                job._sig = (st.st_size, st.st_mtime)
+            except OSError:
+                pass
+            self.jobs[job.id] = job
+        self.push(job)
+        self.wake.set()
+        return job
+
+    def add_url(self, url: str, title: str = None) -> Job:
+        job = Job("url", title or url, url)
+        job.stage = "Queued"  # a pasted link is an explicit "do it now"
+        with self.lock:
+            self.jobs[job.id] = job
+        self.push(job)
+        self.wake.set()
+        return job
+
+    def start_waiting(self) -> int:
+        n = 0
+        with self.lock:
+            for j in self.jobs.values():
+                if j.status == "waiting":
+                    j.status, j.stage = "queued", "Queued"
+                    n += 1
+                    self.push(j)
+        self.wake.set()
+        return n
+
+    def retry(self, job_id: str) -> bool:
+        with self.lock:
+            j = self.jobs.get(job_id)
+            if not j or j.status not in ("error", "cancelled"):
+                return False
+            if j.kind == "file" and not Path(j.src).exists():
+                return False
+            j.status, j.stage, j.pct, j.error = "queued", "Queued", None, None
+            j.cancel = threading.Event()
+            j.log.append("── retry ──")
+        self.push(j)
+        self.wake.set()
+        return True
+
+    def cancel(self, job_id: str) -> bool:
+        with self.lock:
+            j = self.jobs.get(job_id)
+            if not j:
+                return False
+            if j.status in ("waiting", "queued"):
+                j.status, j.stage = "cancelled", "Cancelled"
+                self.push(j)
+                return True
+            if j.status == "running":
+                j.cancel.set()
+                j.stage = "Cancelling…"
+                self.push(j)
+                return True
+        return False
+
+    def remove(self, job_id: str) -> bool:
+        """Forget a finished job. A file still sitting in queue/ is moved to
+        archive/_removed/ (not deleted) so the watcher doesn't re-add it."""
+        with self.lock:
+            j = self.jobs.get(job_id)
+            if not j or j.status == "running":
+                return False
+            if j.status in ("waiting", "queued"):
+                j.status = "cancelled"
+            if j.kind == "file":
+                p = Path(j.src)
+                if p.exists() and QUEUE_DIR.resolve() in p.resolve().parents:
+                    try:
+                        archive_original(p, ARCHIVE_DIR, group="_removed")
+                    except OSError:
+                        pass
+            del self.jobs[job_id]
+        self._broadcast("removed", {"id": job_id})
+        return True
+
+    def clear_finished(self) -> int:
+        with self.lock:
+            ids = [i for i, j in self.jobs.items() if j.status == "done"]
+            for i in ids:
+                del self.jobs[i]
+        for i in ids:
+            self._broadcast("removed", {"id": i})
+        return len(ids)
+
+    def snapshot(self) -> list:
+        with self.lock:
+            return [j.public() for j in self.jobs.values()]
+
+    # — worker —
+    def _next(self):
+        with self.lock:
+            for j in self.jobs.values():
+                if j.status == "queued":
+                    j.status = "running"
+                    return j
+        return None
+
+    def _worker(self):
+        while True:
+            job = self._next()
+            if job is None:
+                if self._done_since_idle:
+                    n, self._done_since_idle = self._done_since_idle, 0
+                    maybe_ping_ntfy("Mojidori", f"{n} transcript{'s' * (n != 1)} ready")
+                self.wake.wait(2)
+                self.wake.clear()
+                continue
+            self._run(job)
+
+    def _run(self, job: Job):
+        s = load_settings()
+
+        def log(line: str):
+            job.log.append(line)
+            if len(job.log) > 2000:
+                del job.log[:500]
+            self._broadcast("log", {"id": job.id, "line": line})
+
+        def status(stage: str, pct=None):
+            if stage != job.stage:
+                job.stage_started = time.time()
+                job.stage, job.pct = stage, pct
+                self.push(job)
+            else:
+                job.pct = pct
+                self.push(job, force=False)
+
+        job.error = None
+        status("Starting")
+        downloaded = None
+        try:
+            src = Path(job.src)
+            source = None
+            if job.kind == "url":
+                status("Downloading", 0.0)
+                downloaded, meta = download_audio(
+                    job.src, DOWNLOAD_DIR, status_cb=status, progress_cb=log,
+                    cancel=job.cancel)
+                job.name = meta["title"]
+                src, source = downloaded, meta["url"]
+            elif not src.exists():
+                raise RuntimeError("File is no longer in the queue folder.")
+
+            result = transcribe_file(
+                src, PROCESSED_DIR,
+                model_name=s["model"], language=LANGUAGES.get(s["language"]),
+                normalize=s["normalize"], include_timestamps=s["timestamps"],
+                include_segments=s["segments"], device=s["device"],
+                provider=s["provider"], target_dbfs=s["target_dbfs"],
+                highpass=s["highpass"], keep_audio=s["keep_audio"],
+                source=source, title=safe_name(job.name),
+                progress_cb=log, status_cb=status, cancel=job.cancel,
+            )
+            if job.kind == "file":
+                try:
+                    dest = archive_original(src, ARCHIVE_DIR)
+                    log(f"[OK] Original moved to archive/{dest.parent.name}/{dest.name}")
+                except OSError as e:
+                    log(f"[WARN] Could not archive original: {e}")
+            job.result = {"folder": result["folder"], **result["stats"]}
+            job.status, job.stage, job.pct = "done", "Done", 100.0
+            self._done_since_idle += 1
+        except Cancelled:
+            job.status, job.stage, job.pct = "cancelled", "Cancelled", None
+            log("[WARN] Cancelled")
+        except Exception as e:  # noqa: BLE001 — surface every failure to the UI
+            job.status, job.stage, job.error = "error", "Failed", str(e)
+            log(f"[ERR] {e}")
+        finally:
+            if downloaded:
+                try:
+                    downloaded.unlink()
+                except OSError:
+                    pass
+            job.finished = time.time()
+            self.push(job)
+
+    # — folder watcher —
+    def _watcher(self):
+        seen: dict[str, tuple] = {}
+        first = True
+        while True:
+            try:
+                current = {}
+                for f in get_audio_files(QUEUE_DIR):
+                    st = f.stat()
+                    current[str(f)] = (st.st_size, st.st_mtime)
+                with self.lock:
+                    known = {(j.src, j._sig) for j in self.jobs.values() if j.kind == "file"}
+                    known_paths = {j.src for j in self.jobs.values()
+                                   if j.kind == "file" and j.status in ACTIVE}
+                for path, sig in current.items():
+                    if path in known_paths or (path, sig) in known:
+                        continue
+                    if first:
+                        # Leftovers from last time: list them, but don't surprise
+                        # anyone by starting a 10-lecture batch on launch.
+                        self.add_file(Path(path), status="waiting")
+                    elif seen.get(path) == sig and sig[0] > 0:   # finished copying
+                        self.add_file(Path(path))
+                seen = current
+                first = False
+            except Exception:  # noqa: BLE001 — the watcher must never die
+                pass
+            time.sleep(2)
+
+
+jobs = JobManager()
+
+
+# ── pages + system ──────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
-    return render_template("index.html",
-                           presets=PRESETS,
-                           languages=list(LANGUAGES.keys()),
-                           models=MODEL_SIZES,
-                           providers=PROVIDERS)
+    return render_template("index.html", languages=list(LANGUAGES.keys()))
 
 
-@app.route("/api/queue")
-def api_queue():
-    files = get_audio_files(QUEUE_DIR)
-    out = []
-    for f in files:
-        done = (PROCESSED_DIR / f.stem / f"{f.stem}_transcript.txt").exists()
-        out.append({"name": f.name, "size": f.stat().st_size, "done": done})
-    return jsonify(out)
+_system_info: dict = {"gpu": None, "checked": False}
 
 
-def _queue_target(filename: str) -> Path | None:
-    """Resolve a queue filename, confined to QUEUE_DIR. None if illegal."""
-    target = (QUEUE_DIR / filename).resolve()
-    if QUEUE_DIR.resolve() not in target.parents or not target.is_file():
-        return None
-    return target
+def _probe_system():
+    from core import gpu_name
+    _system_info["gpu"] = gpu_name()
+    _system_info["checked"] = True
 
 
-@app.route("/api/queue/<path:filename>", methods=["DELETE"])
-def api_queue_delete(filename):
-    target = _queue_target(filename)
-    if target is None:
-        return jsonify(error="not found"), 404
-    target.unlink()
-    return jsonify(deleted=filename)
+threading.Thread(target=_probe_system, daemon=True).start()
 
 
-@app.route("/api/queue/clear", methods=["POST"])
-def api_queue_clear():
-    removed = 0
-    for f in get_audio_files(QUEUE_DIR):
-        try:
-            f.unlink()
-            removed += 1
-        except OSError:
-            pass
-    return jsonify(cleared=removed)
-
-
-def _probe_minutes(path: Path) -> float | None:
-    """Audio duration in minutes via ffprobe (instant, no decode)."""
-    if not shutil.which("ffprobe"):
-        return None
+@app.route("/api/system")
+def api_system():
     try:
-        r = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "csv=p=0", str(path)],
-            capture_output=True, text=True, timeout=15)
-        return float(r.stdout.strip()) / 60
-    except (ValueError, subprocess.SubprocessError, OSError):
-        return None
-
-
-OPENAI_USD_PER_MIN = 0.006
-
-
-@app.route("/api/estimate")
-def api_estimate():
-    """Cost/time clarity: queue durations + what each engine costs. Free unless OpenAI."""
-    files = []
-    total = 0.0
-    unknown = False
-    for f in get_audio_files(QUEUE_DIR):
-        mins = _probe_minutes(f)
-        if mins is None:
-            unknown = True
-        else:
-            total += mins
-        files.append({"name": f.name, "minutes": round(mins, 1) if mins else None})
+        import yt_dlp
+        ytdlp = yt_dlp.version.__version__
+    except ImportError:
+        ytdlp = None
     return jsonify({
-        "files": files,
-        "total_min": round(total, 1),
-        "unknown": unknown,
-        "costs": {
-            "local": 0.0,
-            "fast": 0.0,
-            "groq": 0.0,
-            "openai": round(total * OPENAI_USD_PER_MIN, 2),
-        },
+        "gpu": _system_info["gpu"], "gpu_checked": _system_info["checked"],
+        "ffmpeg": bool(shutil.which("ffmpeg")), "ytdlp": ytdlp,
+        "queue_dir": str(QUEUE_DIR), "processed_dir": str(PROCESSED_DIR),
     })
 
 
-@app.route("/api/processed")
-def api_processed():
-    folders = []
-    if PROCESSED_DIR.exists():
-        for d in sorted(PROCESSED_DIR.iterdir()):
-            if d.is_dir():
-                outputs = sorted(
-                    [t.name for t in d.iterdir()
-                     if t.is_file() and t.suffix in (".txt", ".srt", ".vtt", ".md")])
-                # transcript first, then the rest
-                outputs.sort(key=lambda n: (0 if n.endswith("_transcript.txt") else 1, n))
-                folders.append({"name": d.name, "transcripts": outputs})
-    return jsonify(folders)
-
-
-VIEWABLE = {".txt", ".srt", ".vtt", ".md"}
-
-
-@app.route("/api/transcript/<path:folder>/<path:filename>")
-def api_transcript(folder, filename):
-    f = PROCESSED_DIR / folder / filename
-    if f.exists() and f.suffix in VIEWABLE:
-        return Response(f.read_text(encoding="utf-8"), mimetype="text/plain")
-    return jsonify(error="not found"), 404
-
-
-@app.route("/api/upload", methods=["POST"])
-def api_upload():
-    uploaded = request.files.getlist("files")
-    saved = []
-    for f in uploaded:
-        if f.filename:
-            dest = QUEUE_DIR / f.filename
-            f.save(str(dest))
-            saved.append(f.filename)
-    return jsonify(saved=saved)
-
-
-def _parse_common(body: dict) -> dict:
-    """Shared transcribe options from request JSON."""
-    preset = body.get("preset", "balanced")
-    provider = body.get("provider", "local")
-    model = body.get("model") or PROVIDERS.get(provider, {}).get(
-        "default_model", PRESETS.get(preset, {}).get("model", "large-v3"))
-    lang_name = body.get("language", "Auto-detect")
-    return {
-        "model": model,
-        "language": LANGUAGES.get(lang_name),
-        "normalize": body.get("normalize", True),
-        "timestamps": body.get("timestamps", True),
-        "segments": body.get("segments", True),
-        "device": body.get("device", "auto"),
-        "provider": provider,
-        "api_key": body.get("api_key") or None,
-        "target_dbfs": body.get("target_dbfs"),
-        "highpass": body.get("highpass", True),
-        "channel": body.get("channel"),
-    }
+@app.route("/api/settings", methods=["GET", "POST"])
+def api_settings():
+    if request.method == "POST":
+        before = load_settings()["auto"]
+        s = save_settings(request.json or {})
+        if s["auto"] and not before:
+            jobs.start_waiting()
+        return jsonify(s)
+    return jsonify(load_settings())
 
 
 @app.route("/api/providers")
@@ -218,10 +456,8 @@ def api_providers():
     out = {}
     for pid, p in PROVIDERS.items():
         out[pid] = {
-            "label": p["label"],
-            "needs_key": p["needs_key"],
-            "models": p["models"],
-            "default_model": p["default_model"],
+            "label": p["label"], "needs_key": p["needs_key"],
+            "models": p["models"], "default_model": p["default_model"],
             "key_url": p.get("key_url"),
             "key_configured": bool(resolve_api_key(pid)) if p["needs_key"] else True,
         }
@@ -230,7 +466,7 @@ def api_providers():
 
 @app.route("/api/key", methods=["POST"])
 def api_key_save():
-    """Save an API key to .env (chmod 600). Body: {provider, key}."""
+    """Save an API key to .env. Body: {provider, key}."""
     body = request.json or {}
     provider = body.get("provider")
     key = (body.get("key") or "").strip()
@@ -242,21 +478,20 @@ def api_key_save():
     env_path = BASE_DIR / ".env"
     lines = []
     if env_path.exists():
-        lines = [l for l in env_path.read_text().splitlines()
-                 if not l.startswith(env_var + "=")]
+        lines = [ln for ln in env_path.read_text(encoding="utf-8").splitlines()
+                 if not ln.startswith(env_var + "=")]
     lines.append(f"{env_var}={key}")
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     try:
         os.chmod(env_path, 0o600)
     except OSError:
         pass
-    os.environ[env_var] = key  # live for this process too
+    os.environ[env_var] = key
     return jsonify(saved=True)
 
 
 @app.route("/api/key/test", methods=["POST"])
 def api_key_test():
-    """Cheap validation of a key. Body: {provider, key?} (falls back to env)."""
     body = request.json or {}
     provider = body.get("provider")
     if provider not in PROVIDERS:
@@ -268,108 +503,186 @@ def api_key_test():
     return jsonify(ok=ok, message=message)
 
 
-@app.route("/api/transcribe", methods=["POST"])
-def api_transcribe():
-    body = request.json or {}
-    opts = _parse_common(body)
-    channel = opts.pop("channel")
+# ── inputs ──────────────────────────────────────────────────────────────────
 
-    def _progress(msg):
-        if channel:
-            _emit(channel, "progress", msg)
+def _unique(path: Path) -> Path:
+    n, out = 1, path
+    while out.exists():
+        out = path.with_name(f"{path.stem} ({n}){path.suffix}")
+        n += 1
+    return out
 
-    def _run():
+
+@app.route("/api/upload", methods=["POST"])
+def api_upload():
+    added = []
+    for f in request.files.getlist("files"):
+        name = safe_name(Path(f.filename or "").name, limit=180)
+        if not name or Path(name).suffix.lower() not in {
+                ".mp3", ".mp4", ".wav", ".m4a", ".flac", ".ogg", ".webm", ".avi", ".mov",
+                ".mkv", ".wmv", ".aac", ".wma", ".mpeg", ".mpg", ".opus"}:
+            continue
+        dest = _unique(QUEUE_DIR / name)
+        tmp = dest.with_name(dest.name + ".uploading")
+        f.save(str(tmp))
+        os.replace(tmp, dest)
+        added.append(jobs.add_file(dest).public())
+    if not added:
+        return jsonify(error="No audio or video files in that drop."), 400
+    return jsonify(jobs=added)
+
+
+@app.route("/api/url", methods=["POST"])
+def api_url():
+    """Body: {text} — any pasted text; every link in it becomes a job.
+    Playlists/channels expand into one job per video."""
+    text = (request.json or {}).get("text", "")
+    urls = find_urls(text)
+    if not urls:
+        return jsonify(error="That doesn't look like a link."), 400
+    added, errors = [], []
+    for url in urls:
         try:
-            if channel:
-                _emit(channel, "started", "Processing started")
-            result = transcribe_queue(
-                QUEUE_DIR, PROCESSED_DIR,
-                model_name=opts["model"], language=opts["language"],
-                normalize=opts["normalize"], include_timestamps=opts["timestamps"],
-                include_segments=opts["segments"], device=opts["device"],
-                provider=opts["provider"], api_key=opts["api_key"],
-                target_dbfs=opts["target_dbfs"], highpass=opts["highpass"],
-                archive_dir=ARCHIVE_DIR,
-                progress_cb=_progress,
-            )
-            result["ping"] = maybe_ping_ntfy(
-                "Transcription done",
-                f"{result['successful']}/{result['total']} files transcribed")
-            if channel:
-                _emit(channel, "done", json.dumps(result))
-        except Exception as e:
-            if channel:
-                _emit(channel, "error", str(e))
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    return jsonify(status="started")
+            entries = expand_url(url)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{url}: {e}")
+            continue
+        for e in entries:
+            added.append(jobs.add_url(e["url"], e["title"]).public())
+    if not added:
+        return jsonify(error="; ".join(errors) or "Nothing to download."), 400
+    return jsonify(jobs=added, errors=errors)
 
 
-@app.route("/api/transcribe/file", methods=["POST"])
-def api_transcribe_file():
-    """Transcribe a single file from the queue by name."""
-    body = request.json or {}
-    filename = body.get("filename")
-    if not filename:
-        return jsonify(error="filename required"), 400
+# ── jobs ────────────────────────────────────────────────────────────────────
 
-    src = QUEUE_DIR / filename
-    if not src.exists():
-        return jsonify(error="file not found in queue"), 404
+@app.route("/api/jobs")
+def api_jobs():
+    return jsonify(jobs.snapshot())
 
-    opts = _parse_common(body)
-    channel = opts.pop("channel")
 
-    def _progress(msg):
-        if channel:
-            _emit(channel, "progress", msg)
+@app.route("/api/jobs/<job_id>/log")
+def api_job_log(job_id):
+    j = jobs.jobs.get(job_id)
+    if not j:
+        return jsonify(error="not found"), 404
+    return jsonify(j.log)
 
-    def _run():
+
+@app.route("/api/jobs/<job_id>/<action>", methods=["POST"])
+def api_job_action(job_id, action):
+    fn = {"cancel": jobs.cancel, "retry": jobs.retry, "remove": jobs.remove}.get(action)
+    if not fn:
+        return jsonify(error="unknown action"), 400
+    return jsonify(ok=fn(job_id))
+
+
+@app.route("/api/start", methods=["POST"])
+def api_start():
+    return jsonify(started=jobs.start_waiting())
+
+
+@app.route("/api/jobs/clear", methods=["POST"])
+def api_jobs_clear():
+    return jsonify(cleared=jobs.clear_finished())
+
+
+@app.route("/api/events")
+def api_events():
+    q = jobs.subscribe()
+
+    def gen():
         try:
-            if channel:
-                _emit(channel, "started", f"Transcribing {filename}")
-            result = transcribe_file(
-                src, PROCESSED_DIR,
-                model_name=opts["model"], language=opts["language"],
-                normalize=opts["normalize"], include_timestamps=opts["timestamps"],
-                include_segments=opts["segments"], device=opts["device"],
-                provider=opts["provider"], api_key=opts["api_key"],
-                target_dbfs=opts["target_dbfs"], highpass=opts["highpass"],
-                progress_cb=_progress,
-            )
-            try:
-                dest = archive_original(src, ARCHIVE_DIR)
-                _progress(f"[OK] Original archived → archive/{dest.parent.name}/{dest.name}")
-            except Exception as e:
-                _progress(f"[WARN] Could not archive original: {e}")
-            ping = maybe_ping_ntfy("Transcription done", f"{filename} transcribed")
-            if channel:
-                _emit(channel, "done", json.dumps({
-                    "file": filename,
-                    "ok": True,
-                    "ping": ping,
-                    **result["stats"],
-                }))
-        except Exception as e:
-            if channel:
-                _emit(channel, "error", str(e))
+            yield f"event: snapshot\ndata: {json.dumps(jobs.snapshot())}\n\n"
+            while True:
+                try:
+                    yield q.get(timeout=15)
+                except queue.Empty:
+                    yield ": keepalive\n\n"
+        finally:
+            jobs.unsubscribe(q)
 
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    return jsonify(status="started")
+    return Response(gen(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ── library ─────────────────────────────────────────────────────────────────
+
+def _in_processed(*parts: str) -> Path | None:
+    target = PROCESSED_DIR.joinpath(*parts).resolve()
+    root = PROCESSED_DIR.resolve()
+    if target != root and root not in target.parents:
+        return None
+    return target
+
+
+@app.route("/api/library")
+def api_library():
+    items = []
+    for d in PROCESSED_DIR.iterdir():
+        if not d.is_dir():
+            continue
+        files = sorted(f.name for f in d.iterdir() if f.is_file())
+        transcript = next((f for f in files if f.endswith("_transcript.txt")), None)
+        if not transcript:
+            continue
+        meta = {}
+        try:
+            meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        items.append({
+            "name": d.name, "transcript": transcript,
+            "files": [f for f in files if Path(f).suffix in VIEWABLE | {".wav"}],
+            "mtime": (d / transcript).stat().st_mtime,
+            "duration_min": meta.get("duration_min"), "words": meta.get("words"),
+            "language": meta.get("language"), "engine": meta.get("engine"),
+            "source": meta.get("source"), "uncertain": meta.get("uncertain"),
+        })
+    items.sort(key=lambda x: x["mtime"], reverse=True)
+    return jsonify(items)
+
+
+@app.route("/api/file/<path:folder>/<path:filename>")
+def api_file(folder, filename):
+    target = _in_processed(folder, filename)
+    if target is None or not target.is_file():
+        return jsonify(error="not found"), 404
+    if request.args.get("download"):
+        return send_from_directory(target.parent, target.name, as_attachment=True)
+    if target.suffix not in VIEWABLE:
+        return jsonify(error="not viewable"), 400
+    return Response(target.read_text(encoding="utf-8"), mimetype="text/plain; charset=utf-8")
+
+
+@app.route("/api/reveal", methods=["POST"])
+def api_reveal():
+    """Open a lecture folder (or the queue folder) in the file manager."""
+    folder = (request.json or {}).get("folder")
+    target = QUEUE_DIR if folder == "__queue__" else _in_processed(folder or "")
+    if target is None or not target.is_dir():
+        return jsonify(error="not found"), 404
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(target))  # noqa: S606 — local desktop app
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(target)])
+        else:
+            subprocess.Popen(["xdg-open", str(target)])
+    except OSError as e:
+        return jsonify(error=str(e)), 500
+    return jsonify(ok=True)
 
 
 @app.route("/api/prompts")
 def api_prompts():
-    """Copy-with-prompt choices: transcript-only + prompt templates."""
     out = [{"id": "none", "title": "Transcript only"}]
     for pid, fname in PROMPTS.items():
         title = pid
         try:
-            first = (BASE_DIR / fname).read_text(encoding="utf-8").splitlines()[0]
+            first = (RES_DIR / fname).read_text(encoding="utf-8").splitlines()[0]
             title = first.lstrip("# ").strip() or pid
-        except OSError:
+        except (OSError, IndexError):
             pass
         out.append({"id": pid, "title": title})
     return jsonify(out)
@@ -377,56 +690,26 @@ def api_prompts():
 
 @app.route("/api/pack")
 def api_pack():
-    """Combined copy pack: prompt template + transcript, ready to paste into AI."""
-    folder = request.args.get("folder", "")
-    file = request.args.get("file", "")
-    prompt = request.args.get("prompt", "none")
-
-    target = (PROCESSED_DIR / folder / file).resolve()
-    if (PROCESSED_DIR.resolve() not in target.parents
-            or target.suffix != ".txt" or not target.is_file()):
+    """Prompt template + transcript in one block, ready to paste into an AI."""
+    target = _in_processed(request.args.get("folder", ""), request.args.get("file", ""))
+    if target is None or target.suffix != ".txt" or not target.is_file():
         return jsonify(error="not found"), 404
     text = target.read_text(encoding="utf-8")
-
+    prompt = request.args.get("prompt", "none")
     if prompt != "none":
         fname = PROMPTS.get(prompt)
-        if not fname:
+        if not fname or not (RES_DIR / fname).is_file():
             return jsonify(error="unknown prompt"), 400
-        pfile = (BASE_DIR / fname).resolve()
-        if BASE_DIR.resolve() not in pfile.parents or not pfile.is_file():
-            return jsonify(error="prompt missing"), 404
-        pack = (pfile.read_text(encoding="utf-8").rstrip()
-                + f"\n\n---\n\n# TRANSCRIPT: {file}\n\n" + text)
-    else:
-        pack = text
-    return Response(pack, mimetype="text/plain")
+        text = ((RES_DIR / fname).read_text(encoding="utf-8").rstrip()
+                + f"\n\n---\n\n# TRANSCRIPT: {target.name}\n\n" + text)
+    return Response(text, mimetype="text/plain; charset=utf-8")
 
 
-@app.route("/api/sse/<channel>")
-def api_sse(channel):
-    def generate():
-        q = _progress_channels.get(channel)
-        if not q:
-            return
-        try:
-            while True:
-                item = q.get(timeout=300)
-                if item is None:
-                    break
-                yield item
-        except queue.Empty:
-            pass
-        finally:
-            _progress_channels.pop(channel, None)
-
-    return Response(generate(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
-
-# ── Main ────────────────────────────────────────────────────────────────
+# ── main ────────────────────────────────────────────────────────────────────
 
 def main():
     import argparse
+    import webbrowser
     parser = argparse.ArgumentParser(description="Mojidori Web UI")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
@@ -434,16 +717,9 @@ def main():
     args = parser.parse_args()
 
     url = f"http://{args.host}:{args.port}"
-    print(f"\n  Mojidori")
-    print(f"  ────────────────────────────────")
-    print(f"  Open: {url}")
-    print(f"  Queue: {QUEUE_DIR}")
-    print(f"  Output: {PROCESSED_DIR}")
-    print()
-
+    print(f"\n  Mojidori — {url}\n  Queue:  {QUEUE_DIR}\n  Output: {PROCESSED_DIR}\n")
     if not args.no_browser:
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
-
     app.run(host=args.host, port=args.port, debug=False, threaded=True)
 
 

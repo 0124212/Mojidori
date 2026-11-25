@@ -19,6 +19,9 @@ queue/*
 !queue/.gitkeep
 processed/*
 !processed/.gitkeep
+archive/
+downloads/
+settings.json
 complete/
 *.zip
 *.log

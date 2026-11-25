@@ -24,8 +24,9 @@ os.chdir(BASE_DIR)
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 MIN_PYTHON = (3, 9)
-REQUIRED_PACKAGES = ['flask']
-WHISPER_PACKAGES = ['openai-whisper', 'faster-whisper', 'torch', 'numpy', 'ffmpeg-python', 'pydub', 'audioop-lts']
+# import names that must be present (all come from requirements.txt)
+NEEDED_MODULES = ['flask', 'dotenv', 'faster_whisper', 'whisper', 'torch', 'pydub', 'yt_dlp']
+TORCH_CUDA_INDEX = "https://download.pytorch.org/whl/cu128"
 
 BANNER = r"""
   ┌─────────────────────────────────────┐
@@ -66,27 +67,54 @@ def install_packages(pip, packages, label="dependencies"):
         return False
 
 
+def has_nvidia_gpu() -> bool:
+    if sys.platform == 'darwin' or not shutil.which('nvidia-smi'):
+        return False
+    try:
+        return subprocess.run(['nvidia-smi', '-L'], capture_output=True, timeout=10).returncode == 0
+    except Exception:
+        return False
+
+
+def torch_state() -> str:
+    """'missing' | 'cuda' | 'cpu' — checked in a subprocess so a broken torch can't crash us."""
+    code = "import torch,sys; sys.stdout.write('cuda' if torch.cuda.is_available() else 'cpu')"
+    try:
+        r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=120)
+        return r.stdout.strip() if r.returncode == 0 else 'missing'
+    except Exception:
+        return 'missing'
+
+
 def ensure_deps():
     if getattr(sys, 'frozen', False):
         return  # bundled EXE: everything is baked in, nothing to install
+    import importlib.util
     pip = find_pip()
     if pip is None:
         print("  ✗ pip not found. Install pip or use a full Python distribution.")
         sys.exit(1)
 
-    # Check Flask (always needed for web UI)
-    try:
-        import flask  # noqa: F401
-    except ImportError:
-        install_packages(pip, REQUIRED_PACKAGES, "Flask")
+    # PyTorch first: plain `pip install torch` on Windows gives the CPU-only
+    # build, which silently ignores an NVIDIA GPU. Get the CUDA build instead.
+    if has_nvidia_gpu():
+        state = torch_state()
+        if state != 'cuda':
+            why = "not installed" if state == 'missing' else "installed without GPU support"
+            print(f"  NVIDIA GPU found, PyTorch {why} — installing the CUDA build (~2.5 GB, one-time)…")
+            extra = ['--force-reinstall', '--no-deps'] if state == 'cpu' else []
+            subprocess.run(pip + ['install', '--upgrade', *extra, 'torch', 'torchaudio',
+                                  '--index-url', TORCH_CUDA_INDEX])
 
-    # Check Whisper stack
-    try:
-        import whisper  # noqa: F401
-        import torch  # noqa: F401
-        import pydub  # noqa: F401
-    except ImportError:
-        install_packages(pip, WHISPER_PACKAGES, "transcription packages")
+    missing = [m for m in NEEDED_MODULES if importlib.util.find_spec(m) is None]
+    if missing:
+        print(f"  Installing missing packages: {', '.join(missing)}")
+        try:
+            subprocess.run(pip + ['install', '-r', str(BASE_DIR / 'requirements.txt')], check=True)
+            print("  ✓ packages installed")
+        except subprocess.CalledProcessError:
+            print(f"  ✗ install failed — try: {' '.join(pip)} install -r requirements.txt")
+            sys.exit(1)
 
 
 def check_ffmpeg():

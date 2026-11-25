@@ -7,18 +7,22 @@ so queue/ and processed/ live beside it, fully portable.
 from PyInstaller.utils.hooks import collect_all
 
 whisper_datas, whisper_binaries, whisper_hidden = collect_all('whisper')
+fw_datas, fw_binaries, fw_hidden = collect_all('faster_whisper')
+ct2_datas, ct2_binaries, ct2_hidden = collect_all('ctranslate2')
+yt_datas, yt_binaries, yt_hidden = collect_all('yt_dlp')        # extractors load lazily
+ejs_datas, ejs_binaries, ejs_hidden = collect_all('yt_dlp_ejs')  # YouTube JS solver
 
 a = Analysis(
     ['start.py'],
     pathex=[],
-    binaries=whisper_binaries,
-    datas=whisper_datas + [
+    binaries=whisper_binaries + fw_binaries + ct2_binaries + yt_binaries + ejs_binaries,
+    datas=whisper_datas + fw_datas + ct2_datas + yt_datas + ejs_datas + [
         ('templates', 'templates'),
         ('prompt_cheat_sheet.md', '.'),
         ('prompt_condensed_notes.md', '.'),
         ('prompt_descriptive_summary.md', '.'),
     ],
-    hiddenimports=whisper_hidden,
+    hiddenimports=whisper_hidden + fw_hidden + ct2_hidden + yt_hidden + ejs_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

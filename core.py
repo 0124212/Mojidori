@@ -35,7 +35,9 @@ os.environ['PYTHONIOENCODING'] = 'utf-8'
 # Load .env (API keys) if python-dotenv is available — never fatal if missing.
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).parent / ".env")
+    # The EXE keeps .env beside Mojidori.exe (where the web UI saves keys).
+    load_dotenv((Path(sys.executable).parent if getattr(sys, "frozen", False)
+                 else Path(__file__).parent) / ".env")
 except ImportError:
     pass
 
@@ -87,16 +89,16 @@ MODEL_SIZES = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
 # Providers
 # ---------------------------------------------------------------------------
 PROVIDERS: Dict[str, Dict[str, Any]] = {
-    "local": {
-        "label": "Local Whisper (private, no key)",
-        "needs_key": False,
-        "models": MODEL_SIZES,
-        "default_model": "large-v3",
-    },
     "fast": {
-        "label": "Local Fast — faster-whisper (free, ~4x quicker)",
+        "label": "On this PC — faster-whisper (recommended)",
         "needs_key": False,
-        "models": ["tiny", "base", "small", "medium", "large-v3"],
+        "models": ["large-v3-turbo", "large-v3", "medium", "small", "base", "tiny"],
+        "default_model": "large-v3-turbo",
+    },
+    "local": {
+        "label": "On this PC — classic openai-whisper",
+        "needs_key": False,
+        "models": ["turbo"] + MODEL_SIZES,
         "default_model": "large-v3",
     },
     "groq": {
@@ -132,12 +134,74 @@ SILENCE_DBFS = -50.0        # below this ≈ digital silence
 # Utility helpers
 # ---------------------------------------------------------------------------
 
+class Cancelled(Exception):
+    """Raised inside a job when the user cancels it."""
+
+
+def _check_cancel(cancel) -> None:
+    if cancel is not None and cancel.is_set():
+        raise Cancelled("cancelled")
+
+
 def check_cuda() -> bool:
     try:
         import torch
         return torch.cuda.is_available()
     except (ImportError, AttributeError, RuntimeError):
         return False
+
+
+def gpu_name() -> Optional[str]:
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return torch.cuda.get_device_name(0)
+    except (ImportError, AttributeError, RuntimeError):
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Decoding prompt. Whisper imitates the style of its prompt rather than
+# obeying it, so English gets a short, well-punctuated sample sentence. The
+# old prompt was an English instruction applied to every language, which
+# nudged non-English audio toward English.
+# Word-list prompts ("MRI: T1, T2, spin echo…") were tested on a real lecture
+# and made things worse — Whisper echoed the list into quiet stretches — so
+# `context` is only for callers who know they need it (e.g. rare names).
+# ---------------------------------------------------------------------------
+
+MAX_CONTEXT_CHARS = 600  # Whisper's prompt window is ~224 tokens
+
+
+def build_prompt(language: Optional[str], context: str = "") -> Optional[str]:
+    context = " ".join((context or "").split())[:MAX_CONTEXT_CHARS]
+    parts = []
+    if language == "en":
+        parts.append("Okay, so let's get started with today's lecture.")
+    if context:
+        parts.append(context if context.endswith((".", "!", "?")) else context + ".")
+    return " ".join(parts) or None
+
+
+# Loaded models stay in memory between files. Only one is kept at a time so
+# switching models doesn't stack them up on the GPU.
+_MODEL_CACHE: Dict[tuple, Any] = {}
+
+
+def _cached_model(key: tuple, loader: Callable[[], Any]):
+    if key not in _MODEL_CACHE:
+        _MODEL_CACHE.clear()
+        try:
+            import gc
+            gc.collect()
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        _MODEL_CACHE[key] = loader()
+    return _MODEL_CACHE[key]
 
 
 def format_timestamp(seconds: float) -> str:
@@ -323,18 +387,27 @@ def clean_and_normalize(
     else:
         _log(f"[AUDIO] Manual target: {target_dbfs:.0f} dBFS")
 
-    audio = AudioSegment.from_file(str(input_file))
-
     # — Pass 0: cleanup (always safe, always applied to the working copy) —
+    # One FFmpeg pass. pydub's high_pass_filter is a per-sample Python loop
+    # (~2.5 min for a 90-min lecture); FFmpeg does it in about a second.
+    steps = []
     if highpass:
-        _log(f"[AUDIO] High-pass @ {HIGHPASS_HZ}Hz (removes rumble/hum/DC offset)…")
-        audio = audio.high_pass_filter(HIGHPASS_HZ)
-    if audio.channels > 1:
-        _log("[AUDIO] Downmixing to mono…")
-        audio = audio.set_channels(1)
-    if audio.frame_rate != WHISPER_RATE:
-        _log(f"[AUDIO] Resampling to {WHISPER_RATE}Hz…")
-        audio = audio.set_frame_rate(WHISPER_RATE)
+        steps.append(f"high-pass @ {HIGHPASS_HZ}Hz")
+    if before.channels > 1:
+        steps.append("mono")
+    if before.sample_rate != WHISPER_RATE:
+        steps.append(f"{WHISPER_RATE}Hz")
+    _log(f"[AUDIO] FFmpeg clean-up: {', '.join(steps) or 'format only'}…")
+    import subprocess
+    cmd = ["ffmpeg", "-nostdin", "-v", "error", "-i", str(input_file)]
+    if highpass:
+        cmd += ["-af", f"highpass=f={HIGHPASS_HZ}"]
+    cmd += ["-ac", "1", "-ar", str(WHISPER_RATE), "-f", "s16le", "-"]
+    try:
+        raw = subprocess.run(cmd, capture_output=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError) as e:
+        raise RuntimeError(f"FFmpeg clean-up failed: {getattr(e, 'stderr', b'') or e}")
+    audio = AudioSegment(data=raw, sample_width=2, frame_rate=WHISPER_RATE, channels=1)
 
     # — Pass 1: coarse gain toward target —
     gain_needed = target_dbfs - audio.dBFS
@@ -522,6 +595,10 @@ def format_transcript(result, include_timestamps=True, include_segments=True,
         f"Words: ~{words:,}  ·  ~{read_min} min read  ·  Paragraphs: {len(paras)}"
         + (f"  ·  Engine: {engine}" if engine else "")
         + (f"  ·  ⚠ {len(flagged)} to verify" if flagged else ""),
+    ]
+    if meta.get("source"):
+        lines.append(f"Source: {meta['source']}")
+    lines += [
         bar,
         "",
         body,
@@ -599,12 +676,16 @@ def transcribe_via_api(
     chunk_min: int = API_CHUNK_MIN,
     retries: int = 3,
     progress_cb: Callable = None,
+    status_cb: Callable = None,
+    prompt: str = None,
+    cancel=None,
 ) -> Dict[str, Any]:
     """Transcribe via Groq/OpenAI with chunking, retries, and temp cleanup."""
     def _log(msg):
         if progress_cb:
             progress_cb(msg)
 
+    extra = {"prompt": prompt} if prompt else {}
     if provider == "groq":
         try:
             from groq import Groq
@@ -614,7 +695,7 @@ def transcribe_via_api(
         model = model or PROVIDERS["groq"]["default_model"]
         call = lambda f, m, lang: client.audio.transcriptions.create(
             file=f, model=m, language=lang,
-            response_format="verbose_json", temperature=0.0)
+            response_format="verbose_json", temperature=0.0, **extra)
     elif provider == "openai":
         try:
             from openai import OpenAI
@@ -624,7 +705,7 @@ def transcribe_via_api(
         model = model or PROVIDERS["openai"]["default_model"]
         call = lambda f, m, lang: client.audio.transcriptions.create(
             file=f, model=m, language=lang,
-            response_format="verbose_json", temperature=0.0)
+            response_format="verbose_json", temperature=0.0, **extra)
     else:
         raise RuntimeError(f"Unknown API provider: {provider}")
 
@@ -633,6 +714,9 @@ def transcribe_via_api(
         chunks = _split_for_api(audio_path, chunk_min, tmpdir, progress_cb=_log)
         results, offsets = [], []
         for i, (cp, off) in enumerate(chunks, 1):
+            _check_cancel(cancel)
+            if status_cb:
+                status_cb("Transcribing (cloud)", 100.0 * (i - 1) / len(chunks))
             size_mb = cp.stat().st_size / 1024 / 1024
             _log(f"[API] Chunk {i}/{len(chunks)} → {provider} ({model}, {size_mb:.1f} MB)…")
             last_err = None
@@ -694,14 +778,20 @@ MODEL_SIZES_GB = {"tiny": "75 MB", "base": "150 MB", "small": "500 MB",
                   "whisper-1": "n/a (cloud)"}
 
 
+MODEL_SIZES_GB.update({"large-v3-turbo": "1.6 GB", "turbo": "1.6 GB"})
+
+
 def model_cached(provider: str, model_name: str) -> bool:
     """True if the model weights are already on disk (no first-run download)."""
     home = Path.home()
     if provider == "local":
-        return (home / ".cache" / "whisper" / f"{model_name}.pt").exists()
+        name = "large-v3-turbo" if model_name == "turbo" else model_name
+        return (home / ".cache" / "whisper" / f"{name}.pt").exists()
     if provider == "fast":
-        d = home / ".cache" / "huggingface" / "hub" / f"models--Systran--faster-whisper-{model_name}"
-        return d.is_dir() and any(d.iterdir())
+        hub = Path(os.environ.get("HF_HUB_CACHE")
+                   or Path(os.environ.get("HF_HOME", home / ".cache" / "huggingface")) / "hub")
+        return any(d.is_dir() and any(d.iterdir())
+                   for d in hub.glob(f"models--*--faster-whisper-{model_name}"))
     return True  # cloud providers hold the model
 
 
@@ -713,18 +803,52 @@ def warn_if_downloading(provider: str, model_name: str, progress_cb: Callable = 
                         f"This can take a while; later runs are instant.")
 
 
+def load_audio_16k(path: Path):
+    """Decode any audio/video to 16 kHz mono float32 with FFmpeg.
+
+    faster-whisper's own decoder goes through PyAV, whose API keeps changing
+    (PyAV 16 dropped an argument faster-whisper 1.2 still passes). FFmpeg is
+    already required, so use it directly.
+    """
+    import subprocess
+    import numpy as np
+    cmd = ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path),
+           "-f", "f32le", "-ac", "1", "-ar", str(WHISPER_RATE), "-"]
+    try:
+        out = subprocess.run(cmd, capture_output=True, check=True).stdout
+    except FileNotFoundError:
+        raise RuntimeError("FFmpeg not found — install it (winget install Gyan.FFmpeg).")
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"FFmpeg could not read the audio: {e.stderr.decode(errors='replace')[-300:]}")
+    return np.frombuffer(out, np.float32).copy()
+
+
 def transcribe_via_faster_whisper(
     audio_path: Path,
     model_name: str = "large-v3",
     language: str = None,
     device: str = "auto",
     progress_cb: Callable = None,
+    status_cb: Callable = None,
+    prompt: str = None,
+    cancel=None,
 ) -> Dict[str, Any]:
-    """Same guards as local Whisper, ~4x faster via CTranslate2."""
+    """CTranslate2 Whisper: ~4x faster than openai-whisper at the same accuracy.
+
+    No VAD on purpose: on real lectures Silero VAD (even at threshold 0.2)
+    cut quiet-but-real sentences, e.g. a lecturer restarting after a break.
+    The compression/logprob/no-speech guards below handle silence instead.
+    """
     def _log(msg):
         if progress_cb:
             progress_cb(msg)
 
+    try:
+        # torch ships the CUDA 12 cuBLAS/cuDNN DLLs CTranslate2 needs on
+        # Windows; importing it first puts them on the DLL search path.
+        import torch  # noqa: F401
+    except ImportError:
+        pass
     try:
         from faster_whisper import WhisperModel
     except ImportError:
@@ -734,24 +858,36 @@ def transcribe_via_faster_whisper(
         device = "cuda" if check_cuda() else "cpu"
     compute = "float16" if device == "cuda" else "int8"
     _log(f"[STEP 3/4] Loading faster-whisper ({model_name}) on {device}/{compute}…")
-    fw = WhisperModel(model_name, device=device, compute_type=compute)
-    _log("[STEP 3/4] Transcribing (fast engine — watch it go)…")
+    if status_cb:
+        status_cb("Loading model", None)
+    fw = _cached_model(("fast", model_name, device, compute),
+                       lambda: WhisperModel(model_name, device=device, compute_type=compute))
+    _check_cancel(cancel)
+    _log("[STEP 3/4] Transcribing…")
     segments_gen, info = fw.transcribe(
-        str(audio_path),
+        load_audio_16k(audio_path),
         language=language,
         task="transcribe",
+        beam_size=5,
         condition_on_previous_text=False,
         compression_ratio_threshold=2.4,
         log_prob_threshold=-1.0,
         no_speech_threshold=0.6,
         temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
-        initial_prompt="This is an English language lecture. "
-                       "Transcribe only English speech with proper punctuation.",
+        initial_prompt=prompt,
     )
-    segs = [{"start": float(s.start), "end": float(s.end), "text": s.text,
-             "avg_logprob": float(s.avg_logprob),
-             "no_speech_prob": float(s.no_speech_prob)}
-            for s in segments_gen]
+    total = float(info.duration) or 1.0
+    if language is None:
+        _log(f"[OK] Detected language: {info.language} "
+             f"({info.language_probability * 100:.0f}% sure)")
+    segs = []
+    for s in segments_gen:  # generator: decoding happens as we iterate
+        _check_cancel(cancel)
+        segs.append({"start": float(s.start), "end": float(s.end), "text": s.text,
+                     "avg_logprob": float(s.avg_logprob),
+                     "no_speech_prob": float(s.no_speech_prob)})
+        if status_cb:
+            status_cb("Transcribing", min(99.0, 100.0 * float(s.end) / total))
     return {"text": " ".join(s["text"].strip() for s in segs),
             "segments": segs,
             "language": info.language,
@@ -835,20 +971,40 @@ def transcribe_file(
     target_dbfs: float = None,
     highpass: bool = True,
     progress_cb: Callable = None,
+    status_cb: Callable = None,
+    context: str = "",
+    source: str = None,
+    keep_audio: bool = False,
+    cancel=None,
+    title: str = None,
 ) -> dict:
+    """Transcribe one file into processed/<title>/.
+
+    progress_cb(line)          — log lines for the console
+    status_cb(stage, pct|None) — structured progress for progress bars
+    context                    — topic words / names to steer spelling
+    source                     — where it came from (URL), written in the header
+    cancel                     — threading.Event; set it to stop between steps
+    """
     t0 = time.time()
 
     def _log(msg):
         if progress_cb:
             progress_cb(msg)
 
-    base_name = input_file.stem
+    def _status(stage, pct=None):
+        if status_cb:
+            status_cb(stage, pct)
+
+    base_name = title or input_file.stem
     lecture_dir = processed_folder / base_name
     lecture_dir.mkdir(parents=True, exist_ok=True)
 
     _log(f"[STEP 1/4] Input: {input_file.name} ({input_file.stat().st_size/1024/1024:.1f} MB)")
 
     # — audio pipeline —
+    _check_cancel(cancel)
+    _status("Cleaning up audio")
     _log("[STEP 2/4] Audio pipeline…")
     audio_file = input_file
     enhanced = None
@@ -875,54 +1031,75 @@ def transcribe_file(
             raise
 
     # — transcription —
+    _check_cancel(cancel)
     _log("[STEP 3/4] Transcription…")
+    prompt = build_prompt(language, context)
+    if prompt:
+        _log(f"[OK] Prompt: \"{prompt[:120]}{'…' if len(prompt) > 120 else ''}\"")
     key = resolve_api_key(provider, api_key)
-    if provider in ("groq", "openai"):
-        if not key:
-            raise RuntimeError(
-                f"No API key for {provider}. Add one in the app settings or set "
-                f"{PROVIDERS[provider]['env_var']}.")
-        _log(f"[API] Provider: {provider} · model: {model_name}")
-        wp_result = transcribe_via_api(
-            audio_file, provider, key, model=model_name,
-            language=language, progress_cb=_log)
-    elif provider == "fast":
-        warn_if_downloading("fast", model_name, _log)
-        wp_result = transcribe_via_faster_whisper(
-            audio_file, model_name=model_name, language=language,
-            device=device, progress_cb=_log)
-    else:
-        import whisper
-        if device == "auto":
-            device = "cuda" if check_cuda() else "cpu"
-        warn_if_downloading("local", model_name, _log)
-        _log(f"[STEP 3/4] Loading local Whisper ({model_name}) on {device}…")
-        model = whisper.load_model(model_name, device=device)
-        _log("[STEP 3/4] Transcribing (this is the slow part — watch GPU/CPU)…")
-        wp_result = model.transcribe(
-            str(audio_file),
-            language=language,
-            verbose=False,
-            task="transcribe",
-            fp16=(device == "cuda"),
-            # Accuracy guards: never let one bad window poison the rest,
-            # retry failed windows at higher temperatures, drop low-confidence
-            # and repetitive (hallucinated) segments.
-            condition_on_previous_text=False,
-            temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
-            compression_ratio_threshold=2.4,
-            logprob_threshold=-1.0,
-            no_speech_threshold=0.6,
-            initial_prompt="This is an English language lecture. "
-                           "Transcribe only English speech with proper punctuation.",
-        )
+    try:
+        if provider in ("groq", "openai"):
+            if not key:
+                raise RuntimeError(
+                    f"No API key for {provider}. Add one in Settings → Engine, or set "
+                    f"{PROVIDERS[provider]['env_var']}.")
+            _log(f"[API] Provider: {provider} · model: {model_name}")
+            wp_result = transcribe_via_api(
+                audio_file, provider, key, model=model_name,
+                language=language, progress_cb=_log, status_cb=status_cb,
+                prompt=prompt, cancel=cancel)
+        elif provider == "fast":
+            if not model_cached("fast", model_name):
+                _status(f"Downloading {model_name} model (one-time)")
+            warn_if_downloading("fast", model_name, _log)
+            wp_result = transcribe_via_faster_whisper(
+                audio_file, model_name=model_name, language=language,
+                device=device, progress_cb=_log, status_cb=status_cb,
+                prompt=prompt, cancel=cancel)
+        else:
+            import whisper
+            if device == "auto":
+                device = "cuda" if check_cuda() else "cpu"
+            warn_if_downloading("local", model_name, _log)
+            _status("Loading model")
+            _log(f"[STEP 3/4] Loading local Whisper ({model_name}) on {device}…")
+            model = _cached_model(("local", model_name, device),
+                                  lambda: whisper.load_model(model_name, device=device))
+            _check_cancel(cancel)
+            _status("Transcribing")
+            _log("[STEP 3/4] Transcribing (classic engine has no live progress)…")
+            wp_result = model.transcribe(
+                str(audio_file),
+                language=language,
+                verbose=None,
+                task="transcribe",
+                fp16=(device == "cuda"),
+                # Beam search + best-of sampling on fallback: the openai-whisper
+                # default is greedy decoding, which misses words more often.
+                beam_size=5,
+                best_of=5,
+                # Accuracy guards: never let one bad window poison the rest,
+                # retry failed windows at higher temperatures, drop low-confidence
+                # and repetitive (hallucinated) segments.
+                condition_on_previous_text=False,
+                temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+                compression_ratio_threshold=2.4,
+                logprob_threshold=-1.0,
+                no_speech_threshold=0.6,
+                initial_prompt=prompt,
+            )
+    finally:
+        if enhanced and not keep_audio:
+            cleanup_files([enhanced])
 
     # — format & save —
+    _check_cancel(cancel)
+    _status("Saving", 100.0)
     _log("[STEP 4/4] Formatting + saving…")
     engine = (f"{provider} {model_name}" if provider in ("local", "fast")
               else f"{provider}/{model_name}")
     formatted = format_transcript(wp_result, include_timestamps, include_segments,
-                                  title=base_name, meta={"engine": engine})
+                                  title=base_name, meta={"engine": engine, "source": source})
     transcript_path = lecture_dir / f"{base_name}_transcript.txt"
     json_path = lecture_dir / f"{base_name}_transcript_raw.json"
     srt_path = lecture_dir / f"{base_name}.srt"
@@ -941,7 +1118,13 @@ def transcribe_file(
         "uncertain": len(uncertain_segments(wp_result)),
         "elapsed_min": round(elapsed / 60, 1),
         "provider": provider,
+        "engine": engine,
+        "words": len(re.findall(r"[A-Za-z0-9']+", " ".join(
+            s.get("text", "") for s in wp_result.get("segments", []) or []))),
+        "source": source,
+        "created": datetime.now().isoformat(timespec="seconds"),
     }
+    (lecture_dir / "meta.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
     _log(f"[OK] Done in {elapsed/60:.1f} min — {stats['duration_min']} min audio, "
          f"{stats['chars']} chars → {transcript_path.name}")
 
@@ -951,7 +1134,8 @@ def transcribe_file(
         "json_path": str(json_path),
         "srt_path": str(srt_path),
         "vtt_path": str(vtt_path),
-        "enhanced_path": str(enhanced) if enhanced else None,
+        "enhanced_path": str(enhanced) if enhanced and keep_audio else None,
+        "folder": lecture_dir.name,
         "audio": audio_info,
         "stats": stats,
     }
@@ -1026,9 +1210,9 @@ def archive_to_zip(original_file: Path, zip_path: Path, class_code: str) -> bool
         return False
 
 
-def archive_original(src: Path, archive_dir: Path) -> Path:
+def archive_original(src: Path, archive_dir: Path, group: str = None) -> Path:
     """Move a finished original into archive/<ClassCode>/ (collision-safe)."""
-    dest_dir = archive_dir / extract_class_code(src.name)
+    dest_dir = archive_dir / (group or extract_class_code(src.name))
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / src.name
     n = 1
@@ -1037,6 +1221,132 @@ def archive_original(src: Path, archive_dir: Path) -> Path:
         n += 1
     shutil.move(str(src), str(dest))
     return dest
+
+
+# ---------------------------------------------------------------------------
+# Links (YouTube and the ~1800 other sites yt-dlp knows)
+# ---------------------------------------------------------------------------
+
+_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
+_BAD_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+def find_urls(text: str) -> List[str]:
+    """Every http(s) link in a blob of pasted text, de-duplicated, in order."""
+    seen, out = set(), []
+    for u in _URL_RE.findall(text or ""):
+        u = u.rstrip(").,;]")
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def safe_name(name: str, limit: int = 120) -> str:
+    """A title that is also a legal Windows/macOS folder name."""
+    name = _BAD_NAME.sub(" ", name or "").strip(" .")
+    name = re.sub(r"\s+", " ", name)[:limit].strip(" .")
+    return name or "Untitled"
+
+
+def _ytdlp_base_opts() -> Dict[str, Any]:
+    opts: Dict[str, Any] = {"quiet": True, "no_warnings": True, "noprogress": True,
+                            "noplaylist": True}
+    # YouTube now needs a JavaScript runtime to unlock every format. yt-dlp
+    # only enables deno by default; turn on whichever runtime is installed.
+    runtimes = {name: {} for name in ("deno", "node", "bun") if shutil.which(name)}
+    if runtimes:
+        opts["js_runtimes"] = runtimes
+    return opts
+
+
+def expand_url(url: str, limit: int = 200) -> List[Dict[str, str]]:
+    """Resolve a link to [{url, title}] — one entry per video (playlists expand).
+
+    Cheap: reads the page/playlist listing only, downloads nothing.
+    """
+    try:
+        import yt_dlp
+    except ImportError:
+        raise RuntimeError("yt-dlp missing — run: pip install yt-dlp")
+    opts = _ytdlp_base_opts() | {"extract_flat": "in_playlist", "skip_download": True}
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except yt_dlp.utils.DownloadError as e:
+        raise RuntimeError(re.sub(r"^ERROR:\s*(\[\w+\]\s*[\w-]+:\s*)?", "", str(e)))
+    if not info:
+        raise RuntimeError("Nothing found at that link.")
+    entries = info.get("entries")
+    if entries is None:
+        return [{"url": info.get("webpage_url") or url,
+                 "title": info.get("title") or url}]
+    out = []
+    for e in entries:
+        if not e:
+            continue
+        u = e.get("url") or e.get("webpage_url")
+        if e.get("ie_key") == "Youtube" and e.get("id"):
+            u = f"https://www.youtube.com/watch?v={e['id']}"
+        if u:
+            out.append({"url": u, "title": e.get("title") or u})
+        if len(out) >= limit:
+            break
+    if not out:
+        raise RuntimeError("That playlist is empty or private.")
+    return out
+
+
+def download_audio(url: str, dest_dir: Path, status_cb: Callable = None,
+                   progress_cb: Callable = None, cancel=None) -> Tuple[Path, Dict[str, Any]]:
+    """Download the best audio-only stream. Returns (file, info).
+
+    No re-encoding: the audio pipeline / Whisper decode it via FFmpeg anyway.
+    """
+    try:
+        import yt_dlp
+    except ImportError:
+        raise RuntimeError("yt-dlp missing — run: pip install yt-dlp")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    def hook(d):
+        _check_cancel(cancel)
+        if d.get("status") == "downloading" and status_cb:
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            done = d.get("downloaded_bytes") or 0
+            status_cb("Downloading", 100.0 * done / total if total else None)
+
+    opts = _ytdlp_base_opts() | {
+        "format": "bestaudio/best",
+        "outtmpl": str(dest_dir / "%(id)s.%(ext)s"),
+        "progress_hooks": [hook],
+        "overwrites": True,
+    }
+    if progress_cb:
+        progress_cb(f"[API] Fetching {url}")
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+    except yt_dlp.utils.DownloadError as e:
+        if isinstance(getattr(e, "exc_info", [None, None])[1], Cancelled):
+            raise Cancelled("cancelled")
+        msg = re.sub(r"^ERROR:\s*", "", str(e))
+        raise RuntimeError(f"Download failed: {msg}")
+    downloads = info.get("requested_downloads") or []
+    path = Path(downloads[0]["filepath"]) if downloads else None
+    if not path or not path.exists():
+        raise RuntimeError("Download finished but no audio file was saved.")
+    meta = {
+        "title": info.get("title") or path.stem,
+        "uploader": info.get("uploader") or info.get("channel"),
+        "duration": info.get("duration"),
+        "url": info.get("webpage_url") or url,
+        "site": info.get("extractor_key"),
+    }
+    if progress_cb:
+        mins = f" · {meta['duration'] / 60:.0f} min" if meta.get("duration") else ""
+        progress_cb(f"[OK] Downloaded \"{meta['title']}\"{mins} ({path.stat().st_size/1024/1024:.1f} MB)")
+    return path, meta
 
 
 def maybe_ping_ntfy(subject: str, message: str) -> bool:
